@@ -340,45 +340,45 @@ local RayfieldLibrary = {
 	Flags = {},
 	Theme = {
 		Default = {
-			TextColor = Color3.fromRGB(240, 240, 240),
+			TextColor = Color3.fromRGB(245, 245, 247),
 
-			Background = Color3.fromRGB(25, 25, 25),
-			Topbar = Color3.fromRGB(34, 34, 34),
-			Shadow = Color3.fromRGB(20, 20, 20),
+			Background = Color3.fromRGB(14, 14, 15),
+			Topbar = Color3.fromRGB(14, 14, 15),
+			Shadow = Color3.fromRGB(0, 0, 0),
 
-			NotificationBackground = Color3.fromRGB(20, 20, 20),
-			NotificationActionsBackground = Color3.fromRGB(230, 230, 230),
+			NotificationBackground = Color3.fromRGB(18, 18, 19),
+			NotificationActionsBackground = Color3.fromRGB(245, 245, 247),
 
-			TabBackground = Color3.fromRGB(80, 80, 80),
-			TabStroke = Color3.fromRGB(85, 85, 85),
-			TabBackgroundSelected = Color3.fromRGB(210, 210, 210),
-			TabTextColor = Color3.fromRGB(240, 240, 240),
-			SelectedTabTextColor = Color3.fromRGB(50, 50, 50),
+			TabBackground = Color3.fromRGB(14, 14, 15),
+			TabStroke = Color3.fromRGB(32, 32, 34),
+			TabBackgroundSelected = Color3.fromRGB(18, 18, 19),
+			TabTextColor = Color3.fromRGB(118, 118, 122),
+			SelectedTabTextColor = Color3.fromRGB(245, 245, 247),
 
-			ElementBackground = Color3.fromRGB(35, 35, 35),
-			ElementBackgroundHover = Color3.fromRGB(40, 40, 40),
-			SecondaryElementBackground = Color3.fromRGB(25, 25, 25),
-			ElementStroke = Color3.fromRGB(50, 50, 50),
-			SecondaryElementStroke = Color3.fromRGB(40, 40, 40),
+			ElementBackground = Color3.fromRGB(28, 28, 29),
+			ElementBackgroundHover = Color3.fromRGB(33, 33, 34),
+			SecondaryElementBackground = Color3.fromRGB(18, 18, 19),
+			ElementStroke = Color3.fromRGB(42, 42, 44),
+			SecondaryElementStroke = Color3.fromRGB(31, 31, 33),
 
-			SliderBackground = Color3.fromRGB(50, 138, 220),
-			SliderProgress = Color3.fromRGB(50, 138, 220),
-			SliderStroke = Color3.fromRGB(58, 163, 255),
+			SliderBackground = Color3.fromRGB(22, 22, 23),
+			SliderProgress = Color3.fromRGB(177, 18, 39),
+			SliderStroke = Color3.fromRGB(44, 44, 46),
 
-			ToggleBackground = Color3.fromRGB(30, 30, 30),
-			ToggleEnabled = Color3.fromRGB(0, 146, 214),
-			ToggleDisabled = Color3.fromRGB(100, 100, 100),
-			ToggleEnabledStroke = Color3.fromRGB(0, 170, 255),
-			ToggleDisabledStroke = Color3.fromRGB(125, 125, 125),
-			ToggleEnabledOuterStroke = Color3.fromRGB(100, 100, 100),
-			ToggleDisabledOuterStroke = Color3.fromRGB(65, 65, 65),
+			ToggleBackground = Color3.fromRGB(22, 22, 23),
+			ToggleEnabled = Color3.fromRGB(24, 163, 124),
+			ToggleDisabled = Color3.fromRGB(64, 64, 66),
+			ToggleEnabledStroke = Color3.fromRGB(35, 203, 156),
+			ToggleDisabledStroke = Color3.fromRGB(84, 84, 86),
+			ToggleEnabledOuterStroke = Color3.fromRGB(27, 116, 92),
+			ToggleDisabledOuterStroke = Color3.fromRGB(61, 61, 63),
 
-			DropdownSelected = Color3.fromRGB(40, 40, 40),
-			DropdownUnselected = Color3.fromRGB(30, 30, 30),
+			DropdownSelected = Color3.fromRGB(34, 34, 35),
+			DropdownUnselected = Color3.fromRGB(24, 24, 25),
 
-			InputBackground = Color3.fromRGB(30, 30, 30),
-			InputStroke = Color3.fromRGB(65, 65, 65),
-			PlaceholderColor = Color3.fromRGB(178, 178, 178),
+			InputBackground = Color3.fromRGB(22, 22, 23),
+			InputStroke = Color3.fromRGB(48, 48, 50),
+			PlaceholderColor = Color3.fromRGB(126, 126, 130),
 		},
 
 		Ocean = {
@@ -978,8 +978,82 @@ if announcementsLayout then
 	announcementsLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
 end
 local keybindConnections = {} -- For storing keybind connections to disconnect when Rayfield is destroyed
+local typographyConnection
 
 local SelectedTheme = RayfieldLibrary.Theme.Default
+
+local interFontCache = {}
+local function getInterFontFace(weight)
+	local key = tostring(weight or "Regular")
+	if interFontCache[key] ~= nil then
+		return interFontCache[key] or nil
+	end
+
+	local ok, fontFace = pcall(function()
+		return Font.new("rbxasset://fonts/families/Inter.json", weight or Enum.FontWeight.Regular, Enum.FontStyle.Normal)
+	end)
+
+	if not ok or not fontFace then
+		ok, fontFace = pcall(function()
+			return Font.fromName("Inter", weight or Enum.FontWeight.Regular, Enum.FontStyle.Normal)
+		end)
+	end
+
+	interFontCache[key] = ok and fontFace or false
+	return interFontCache[key] or nil
+end
+
+local function inferTextWeight(textObject)
+	if textObject.Name == "Title" or textObject.TextSize >= 18 then
+		local ok, weight = pcall(function()
+			return Enum.FontWeight.SemiBold
+		end)
+		if ok then
+			return weight
+		end
+	end
+
+	local ok, weight = pcall(function()
+		return Enum.FontWeight.Regular
+	end)
+	return ok and weight or nil
+end
+
+local function applyTypography(textObject)
+	if not (textObject:IsA("TextLabel") or textObject:IsA("TextButton") or textObject:IsA("TextBox")) then
+		return
+	end
+
+	local fontFace = getInterFontFace(inferTextWeight(textObject))
+	if fontFace then
+		pcall(function()
+			textObject.FontFace = fontFace
+		end)
+	else
+		pcall(function()
+			textObject.Font = Enum.Font.Gotham
+		end)
+	end
+
+	pcall(function()
+		textObject.TextScaled = false
+	end)
+	pcall(function()
+		textObject.TextStrokeTransparency = 1
+	end)
+end
+
+local function applyInterfaceTypography(root)
+	applyTypography(root)
+	for _, descendant in ipairs(root:GetDescendants()) do
+		applyTypography(descendant)
+	end
+end
+
+applyInterfaceTypography(Rayfield)
+typographyConnection = Rayfield.DescendantAdded:Connect(function(descendant)
+	applyTypography(descendant)
+end)
 
 local function ChangeTheme(Theme)
 	if typeof(Theme) == "string" then
@@ -1034,6 +1108,130 @@ local function ChangeTheme(Theme)
 			end
 		end
 	end
+end
+
+local ActiveTabPage
+
+local function isTabPage(page)
+	return page
+		and page.ClassName == "ScrollingFrame"
+		and page.Name ~= "Template"
+		and page.Name ~= "Placeholder"
+end
+
+local function isTabButton(tabButton)
+	return tabButton
+		and tabButton.ClassName == "Frame"
+		and tabButton.Name ~= "Template"
+		and tabButton.Name ~= "Placeholder"
+		and tabButton:FindFirstChild("Title")
+end
+
+local function getFallbackTabPage()
+	local fallback
+
+	for _, page in ipairs(Elements:GetChildren()) do
+		if isTabPage(page) and page.Visible then
+			if not fallback or page.LayoutOrder < fallback.LayoutOrder then
+				fallback = page
+			end
+		end
+	end
+
+	return fallback
+end
+
+local function getActiveTabPage()
+	if isTabPage(ActiveTabPage) and ActiveTabPage.Parent == Elements then
+		return ActiveTabPage
+	end
+
+	local currentPage = Elements.UIPageLayout.CurrentPage
+	if isTabPage(currentPage) then
+		ActiveTabPage = currentPage
+		return currentPage
+	end
+
+	ActiveTabPage = getFallbackTabPage()
+	return ActiveTabPage
+end
+
+local function applyProps(instance, props, tweenInfo)
+	if not instance then
+		return
+	end
+
+	if tweenInfo then
+		TweenService:Create(instance, tweenInfo, props):Play()
+		return
+	end
+
+	for property, value in pairs(props) do
+		pcall(function()
+			instance[property] = value
+		end)
+	end
+end
+
+local function syncTabButtons(instant)
+	local activePage = getActiveTabPage()
+	local tweenInfo = not instant and TweenInfo.new(0.28, Enum.EasingStyle.Quart, Enum.EasingDirection.Out) or nil
+
+	for _, tabButton in ipairs(TabList:GetChildren()) do
+		if isTabButton(tabButton) then
+			local selected = activePage and tabButton.Name == activePage.Name
+
+			applyProps(tabButton, {
+				BackgroundColor3 = selected and SelectedTheme.TabBackgroundSelected or SelectedTheme.TabBackground,
+				BackgroundTransparency = selected and 0 or 0.7,
+			}, tweenInfo)
+			applyProps(tabButton.Title, {
+				TextColor3 = selected and SelectedTheme.SelectedTabTextColor or SelectedTheme.TabTextColor,
+				TextTransparency = selected and 0 or 0.2,
+			}, tweenInfo)
+			applyProps(tabButton.Image, {
+				ImageColor3 = selected and SelectedTheme.SelectedTabTextColor or SelectedTheme.TabTextColor,
+				ImageTransparency = selected and 0 or 0.2,
+			}, tweenInfo)
+			applyProps(tabButton.UIStroke, {
+				Color = SelectedTheme.TabStroke,
+				Transparency = selected and 1 or 0.5,
+			}, tweenInfo)
+		end
+	end
+end
+
+local function syncActiveTab(instant, restoreContent)
+	local activePage = getActiveTabPage()
+	if not activePage then
+		return
+	end
+
+	local wasAnimated = Elements.UIPageLayout.Animated
+	if instant then
+		Elements.UIPageLayout.Animated = false
+	end
+	if Elements.UIPageLayout.CurrentPage ~= activePage then
+		Elements.UIPageLayout:JumpTo(activePage)
+	end
+	if instant then
+		Elements.UIPageLayout.Animated = wasAnimated
+	end
+
+	if restoreContent and not searchOpen then
+		local searchTitle = activePage:FindFirstChild("SearchTitle-fsefsefesfsefesfesfThanks")
+		if searchTitle then
+			searchTitle:Destroy()
+		end
+
+		for _, element in ipairs(activePage:GetChildren()) do
+			if element.ClassName == "Frame" and element.Name ~= "Placeholder" then
+				element.Visible = true
+			end
+		end
+	end
+
+	syncTabButtons(instant)
 end
 
 local function getIcon(name: string): { id: number, imageRectSize: Vector2, imageRectOffset: Vector2 }
@@ -1251,7 +1449,7 @@ local function LoadConfiguration(Configuration)
 		local FlagValue = Data[FlagName]
 
 		if (typeof(FlagValue) == "boolean" and FlagValue == false) or FlagValue then
-			task.spawn(function()
+			local flagSuccess, flagError = pcall(function()
 				if Flag.Type == "ColorPicker" then
 					changed = true
 					Flag:Set(UnpackColor(FlagValue))
@@ -1262,6 +1460,9 @@ local function LoadConfiguration(Configuration)
 					end
 				end
 			end)
+			if not flagSuccess then
+				warn("Rayfield | Unable to load '" .. FlagName .. "' from the save file: " .. tostring(flagError))
+			end
 		else
 			warn("Rayfield | Unable to find '" .. FlagName .. "' in the save file.")
 			print("The error above may not be an issue if new elements have been added or not been set values.")
@@ -1269,6 +1470,7 @@ local function LoadConfiguration(Configuration)
 		end
 	end
 
+	task.defer(syncActiveTab, true, true)
 	return changed
 end
 
@@ -1551,10 +1753,11 @@ local function closeSearch()
 	TweenService:Create(Main.Search.UIStroke, TweenInfo.new(0.15, Enum.EasingStyle.Quint), { Transparency = 1 }):Play()
 	TweenService:Create(Main.Search.Input, TweenInfo.new(0.15, Enum.EasingStyle.Quint), { TextTransparency = 1 }):Play()
 
+	local activePage = getActiveTabPage()
 	for _, tabbtn in ipairs(TabList:GetChildren()) do
 		if tabbtn.ClassName == "Frame" and tabbtn.Name ~= "Placeholder" then
 			tabbtn.Interact.Visible = true
-			if tostring(Elements.UIPageLayout.CurrentPage) == tabbtn.Title.Text then
+			if activePage and activePage.Name == tabbtn.Name then
 				TweenService
 					:Create(tabbtn, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), { BackgroundTransparency = 0 })
 					:Play()
@@ -1586,6 +1789,7 @@ local function closeSearch()
 
 	Main.Search.Input.Text = ""
 	Main.Search.Input.Interactable = false
+	task.defer(syncActiveTab, true, true)
 end
 
 -- Sets element visibility across all tab pages (used by Hide, Unhide, Maximise, Minimise)
@@ -1647,10 +1851,11 @@ end
 
 -- Sets tab button visibility (used by Hide, Unhide, Maximise, Minimise)
 local function setTabButtonsVisible(show)
+	local activePage = getActiveTabPage()
 	for _, tabbtn in ipairs(TabList:GetChildren()) do
 		if tabbtn.ClassName == "Frame" and tabbtn.Name ~= "Placeholder" then
 			if show then
-				if tostring(Elements.UIPageLayout.CurrentPage) == tabbtn.Title.Text then
+				if activePage and activePage.Name == tabbtn.Name then
 					TweenService
 						:Create(
 							tabbtn,
@@ -2214,6 +2419,8 @@ function RayfieldLibrary:CreateWindow(Settings)
 			warn("issue rendering theme. no theme on file")
 			print(result)
 		end
+	else
+		pcall(ChangeTheme, "Default")
 	end
 
 	Topbar.Visible = false
@@ -2598,6 +2805,7 @@ function RayfieldLibrary:CreateWindow(Settings)
 	local Window = {}
 	function Window:CreateTab(Name, Image, Ext)
 		local SDone = false
+		local IsFirstVisibleTab = false
 		local TabButton = TabList.Template:Clone()
 		TabButton.Name = Name
 		TabButton.Title.Text = Name
@@ -2634,7 +2842,7 @@ function RayfieldLibrary:CreateWindow(Settings)
 		TabPage.Name = Name
 		TabPage.Visible = true
 
-		TabPage.LayoutOrder = #Elements:GetChildren() or Ext and 10000
+		TabPage.LayoutOrder = Ext and 10000 or #Elements:GetChildren()
 
 		for _, TemplateElement in ipairs(TabPage:GetChildren()) do
 			if TemplateElement.ClassName == "Frame" and TemplateElement.Name ~= "Placeholder" then
@@ -2644,6 +2852,9 @@ function RayfieldLibrary:CreateWindow(Settings)
 
 		TabPage.Parent = Elements
 		if not FirstTab and not Ext then
+			FirstTab = Name
+			ActiveTabPage = TabPage
+			IsFirstVisibleTab = true
 			Elements.UIPageLayout.Animated = false
 			Elements.UIPageLayout:JumpTo(TabPage)
 			Elements.UIPageLayout.Animated = true
@@ -2663,7 +2874,7 @@ function RayfieldLibrary:CreateWindow(Settings)
 
 		-- Animate
 		task.wait(0.1)
-		if FirstTab or Ext then
+		if not IsFirstVisibleTab then
 			TabButton.BackgroundColor3 = SelectedTheme.TabBackground
 			TabButton.Image.ImageColor3 = SelectedTheme.TabTextColor
 			TabButton.Title.TextColor3 = SelectedTheme.TabTextColor
@@ -2679,8 +2890,7 @@ function RayfieldLibrary:CreateWindow(Settings)
 			TweenService
 				:Create(TabButton.UIStroke, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), { Transparency = 0.5 })
 				:Play()
-		elseif not Ext then
-			FirstTab = Name
+		else
 			TabButton.BackgroundColor3 = SelectedTheme.TabBackgroundSelected
 			TabButton.Image.ImageColor3 = SelectedTheme.SelectedTabTextColor
 			TabButton.Title.TextColor3 = SelectedTheme.SelectedTabTextColor
@@ -2699,82 +2909,9 @@ function RayfieldLibrary:CreateWindow(Settings)
 			if Minimised then
 				return
 			end
-			TweenService
-				:Create(TabButton, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), { BackgroundTransparency = 0 })
-				:Play()
-			TweenService
-				:Create(TabButton.UIStroke, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), { Transparency = 1 })
-				:Play()
-			TweenService
-				:Create(TabButton.Title, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), { TextTransparency = 0 })
-				:Play()
-			TweenService
-				:Create(TabButton.Image, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), { ImageTransparency = 0 })
-				:Play()
-			TweenService:Create(
-				TabButton,
-				TweenInfo.new(0.7, Enum.EasingStyle.Exponential),
-				{ BackgroundColor3 = SelectedTheme.TabBackgroundSelected }
-			):Play()
-			TweenService:Create(
-				TabButton.Title,
-				TweenInfo.new(0.7, Enum.EasingStyle.Exponential),
-				{ TextColor3 = SelectedTheme.SelectedTabTextColor }
-			):Play()
-			TweenService:Create(
-				TabButton.Image,
-				TweenInfo.new(0.7, Enum.EasingStyle.Exponential),
-				{ ImageColor3 = SelectedTheme.SelectedTabTextColor }
-			):Play()
 
-			for _, OtherTabButton in ipairs(TabList:GetChildren()) do
-				if
-					OtherTabButton.Name ~= "Template"
-					and OtherTabButton.ClassName == "Frame"
-					and OtherTabButton ~= TabButton
-					and OtherTabButton.Name ~= "Placeholder"
-				then
-					TweenService:Create(
-						OtherTabButton,
-						TweenInfo.new(0.7, Enum.EasingStyle.Exponential),
-						{ BackgroundColor3 = SelectedTheme.TabBackground }
-					):Play()
-					TweenService:Create(
-						OtherTabButton.Title,
-						TweenInfo.new(0.7, Enum.EasingStyle.Exponential),
-						{ TextColor3 = SelectedTheme.TabTextColor }
-					):Play()
-					TweenService:Create(
-						OtherTabButton.Image,
-						TweenInfo.new(0.7, Enum.EasingStyle.Exponential),
-						{ ImageColor3 = SelectedTheme.TabTextColor }
-					):Play()
-					TweenService:Create(
-						OtherTabButton,
-						TweenInfo.new(0.7, Enum.EasingStyle.Exponential),
-						{ BackgroundTransparency = 0.7 }
-					):Play()
-					TweenService:Create(
-						OtherTabButton.Title,
-						TweenInfo.new(0.7, Enum.EasingStyle.Exponential),
-						{ TextTransparency = 0.2 }
-					):Play()
-					TweenService:Create(
-						OtherTabButton.Image,
-						TweenInfo.new(0.7, Enum.EasingStyle.Exponential),
-						{ ImageTransparency = 0.2 }
-					):Play()
-					TweenService:Create(
-						OtherTabButton.UIStroke,
-						TweenInfo.new(0.7, Enum.EasingStyle.Exponential),
-						{ Transparency = 0.5 }
-					):Play()
-				end
-			end
-
-			if Elements.UIPageLayout.CurrentPage ~= TabPage then
-				Elements.UIPageLayout:JumpTo(TabPage)
-			end
+			ActiveTabPage = TabPage
+			syncActiveTab(false, true)
 		end)
 
 		local Tab = {}
@@ -4644,7 +4781,6 @@ function RayfieldLibrary:CreateWindow(Settings)
 
 		-- Slider
 		function Tab:CreateSlider(SliderSettings)
-			local SLDragging = false
 			local Slider = Elements.Template.Slider:Clone()
 			Slider.Name = SliderSettings.Name
 			Slider.Title.Text = SliderSettings.Name
@@ -4673,27 +4809,207 @@ function RayfieldLibrary:CreateWindow(Settings)
 				:Create(Slider.Title, TweenInfo.new(0.7, Enum.EasingStyle.Exponential), { TextTransparency = 0 })
 				:Play()
 
-			Slider.Main.Progress.Size = UDim2.new(
-				0,
-				Slider.Main.AbsoluteSize.X
-								* ((SliderSettings.CurrentValue - SliderSettings.Range[1]) / (SliderSettings.Range[2] - SliderSettings.Range[1]))
-							> 5
-						and Slider.Main.AbsoluteSize.X * ((SliderSettings.CurrentValue - SliderSettings.Range[1]) / (SliderSettings.Range[2] - SliderSettings.Range[1]))
-					or 5,
-				1,
-				0
-			)
-
-			if not SliderSettings.Suffix then
-				Slider.Main.Information.Text = tostring(SliderSettings.CurrentValue)
-			else
-				Slider.Main.Information.Text = tostring(SliderSettings.CurrentValue) .. " " .. SliderSettings.Suffix
+			local minValue = tonumber(SliderSettings.Range and SliderSettings.Range[1]) or 0
+			local maxValue = tonumber(SliderSettings.Range and SliderSettings.Range[2]) or minValue
+			if maxValue < minValue then
+				minValue, maxValue = maxValue, minValue
 			end
+
+			local increment = tonumber(SliderSettings.Increment) or 1
+			if increment <= 0 then
+				increment = 1
+			end
+
+			SliderSettings.CurrentValue = tonumber(SliderSettings.CurrentValue) or minValue
+			SliderSettings.CurrentValue = math.clamp(SliderSettings.CurrentValue, minValue, maxValue)
+
+			local SLDragging = false
+			local dragChanged = false
+			local inputChangedConnection
+			local inputEndedConnection
+			local sliderMinProgressPixels = 4
+
+			local function roundToPrecision(value)
+				local precision = 10000000
+				if value >= 0 then
+					return math.floor(value * precision + 0.5) / precision
+				end
+
+				return math.ceil(value * precision - 0.5) / precision
+			end
+
+			local function normaliseSliderValue(value)
+				value = tonumber(value) or minValue
+				local rounded = math.floor(((value - minValue) / increment) + 0.5) * increment + minValue
+				return math.clamp(roundToPrecision(rounded), minValue, maxValue)
+			end
+
+			local function sliderPercent(value)
+				if maxValue == minValue then
+					return 0
+				end
+
+				return math.clamp((value - minValue) / (maxValue - minValue), 0, 1)
+			end
+
+			local function progressSizeForValue(value)
+				local width = Slider.Main.AbsoluteSize.X
+				if width <= 0 then
+					return UDim2.new(0, 0, 1, 0)
+				end
+
+				local percent = sliderPercent(value)
+				local progressWidth = width * percent
+				if percent <= 0 then
+					progressWidth = math.min(sliderMinProgressPixels, width)
+				else
+					progressWidth = math.clamp(progressWidth, sliderMinProgressPixels, width)
+				end
+
+				return UDim2.new(0, progressWidth, 1, 0)
+			end
+
+			local function sliderText(value)
+				if not SliderSettings.Suffix or SliderSettings.Suffix == "" then
+					return tostring(value)
+				end
+
+				return tostring(value) .. " " .. SliderSettings.Suffix
+			end
+
+			local function setSliderVisual(value, animate)
+				local size = progressSizeForValue(value)
+				if animate then
+					TweenService:Create(
+						Slider.Main.Progress,
+						TweenInfo.new(0.22, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
+						{ Size = size }
+					):Play()
+				else
+					Slider.Main.Progress.Size = size
+				end
+
+				Slider.Main.Information.Text = sliderText(value)
+			end
+
+			local function showCallbackError(response)
+				task.spawn(function()
+					TweenService:Create(
+						Slider,
+						TweenInfo.new(0.35, Enum.EasingStyle.Exponential),
+						{ BackgroundColor3 = Color3.fromRGB(85, 0, 0) }
+					):Play()
+					TweenService
+						:Create(Slider.UIStroke, TweenInfo.new(0.35, Enum.EasingStyle.Exponential), { Transparency = 1 })
+						:Play()
+					Slider.Title.Text = "Callback Error"
+					print("Rayfield | " .. SliderSettings.Name .. " Callback Error " .. tostring(response))
+					warn("Check docs.sirius.menu for help with Rayfield specific development.")
+					task.wait(0.5)
+					Slider.Title.Text = SliderSettings.Name
+					TweenService:Create(
+						Slider,
+						TweenInfo.new(0.35, Enum.EasingStyle.Exponential),
+						{ BackgroundColor3 = SelectedTheme.ElementBackground }
+					):Play()
+					TweenService
+						:Create(Slider.UIStroke, TweenInfo.new(0.35, Enum.EasingStyle.Exponential), { Transparency = 0 })
+						:Play()
+				end)
+			end
+
+			local function runSliderCallback(value)
+				if type(SliderSettings.Callback) ~= "function" then
+					return true
+				end
+
+				local success, response = pcall(function()
+					SliderSettings.Callback(value)
+				end)
+
+				if not success then
+					showCallbackError(response)
+				end
+
+				return success
+			end
+
+			local function applySliderValue(value, animate, forceCallback, save)
+				local newValue = normaliseSliderValue(value)
+				local changed = SliderSettings.CurrentValue ~= newValue
+
+				SliderSettings.CurrentValue = newValue
+				setSliderVisual(newValue, animate)
+
+				if changed or forceCallback then
+					runSliderCallback(newValue)
+					dragChanged = dragChanged or changed
+				end
+
+				if save and not SliderSettings.Ext then
+					SaveConfiguration()
+				end
+			end
+
+			local function valueFromX(x)
+				local width = Slider.Main.AbsoluteSize.X
+				if width <= 0 then
+					return SliderSettings.CurrentValue
+				end
+
+				local percent = math.clamp((x - Slider.Main.AbsolutePosition.X) / width, 0, 1)
+				return minValue + percent * (maxValue - minValue)
+			end
+
+			local function disconnectSliderDrag()
+				if inputChangedConnection then
+					inputChangedConnection:Disconnect()
+					inputChangedConnection = nil
+				end
+				if inputEndedConnection then
+					inputEndedConnection:Disconnect()
+					inputEndedConnection = nil
+				end
+			end
+
+			local function finishSliderDrag()
+				if not SLDragging then
+					return
+				end
+
+				SLDragging = false
+				disconnectSliderDrag()
+				TweenService:Create(
+					Slider.Main.UIStroke,
+					TweenInfo.new(0.22, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
+					{ Transparency = 0.4 }
+				):Play()
+				TweenService:Create(
+					Slider.Main.Progress.UIStroke,
+					TweenInfo.new(0.22, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
+					{ Transparency = 0.3 }
+				):Play()
+
+				if dragChanged and not SliderSettings.Ext then
+					SaveConfiguration()
+				end
+				dragChanged = false
+			end
+
+			SliderSettings.CurrentValue = normaliseSliderValue(SliderSettings.CurrentValue)
+			setSliderVisual(SliderSettings.CurrentValue, false)
+			task.defer(function()
+				setSliderVisual(SliderSettings.CurrentValue, false)
+			end)
+
+			Slider.Main:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+				setSliderVisual(SliderSettings.CurrentValue, false)
+			end)
 
 			Slider.MouseEnter:Connect(function()
 				TweenService:Create(
 					Slider,
-					TweenInfo.new(0.6, Enum.EasingStyle.Exponential),
+					TweenInfo.new(0.25, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
 					{ BackgroundColor3 = SelectedTheme.ElementBackgroundHover }
 				):Play()
 			end)
@@ -4701,7 +5017,7 @@ function RayfieldLibrary:CreateWindow(Settings)
 			Slider.MouseLeave:Connect(function()
 				TweenService:Create(
 					Slider,
-					TweenInfo.new(0.6, Enum.EasingStyle.Exponential),
+					TweenInfo.new(0.25, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
 					{ BackgroundColor3 = SelectedTheme.ElementBackground }
 				):Play()
 			end)
@@ -4713,15 +5029,47 @@ function RayfieldLibrary:CreateWindow(Settings)
 				then
 					TweenService:Create(
 						Slider.Main.UIStroke,
-						TweenInfo.new(0.6, Enum.EasingStyle.Exponential),
+						TweenInfo.new(0.22, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
 						{ Transparency = 1 }
 					):Play()
 					TweenService:Create(
 						Slider.Main.Progress.UIStroke,
-						TweenInfo.new(0.6, Enum.EasingStyle.Exponential),
+						TweenInfo.new(0.22, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
 						{ Transparency = 1 }
 					):Play()
+					disconnectSliderDrag()
 					SLDragging = true
+					dragChanged = false
+
+					local startX = Input.Position and Input.Position.X or UserInputService:GetMouseLocation().X
+					applySliderValue(valueFromX(startX), false, false, false)
+
+					inputChangedConnection = UserInputService.InputChanged:Connect(function(changedInput)
+						if not SLDragging then
+							return
+						end
+
+						local isMouseDrag = Input.UserInputType == Enum.UserInputType.MouseButton1
+							and changedInput.UserInputType == Enum.UserInputType.MouseMovement
+						local isTouchDrag = Input.UserInputType == Enum.UserInputType.Touch
+							and changedInput.UserInputType == Enum.UserInputType.Touch
+
+						if isMouseDrag or isTouchDrag or changedInput == Input then
+							local positionX = changedInput.Position and changedInput.Position.X
+								or UserInputService:GetMouseLocation().X
+							applySliderValue(valueFromX(positionX), false, false, false)
+						end
+					end)
+
+					inputEndedConnection = UserInputService.InputEnded:Connect(function(endedInput)
+						if
+							endedInput == Input
+							or endedInput.UserInputType == Enum.UserInputType.MouseButton1
+							or endedInput.UserInputType == Enum.UserInputType.Touch
+						then
+							finishSliderDrag()
+						end
+					end)
 				end
 			end)
 
@@ -4730,180 +5078,12 @@ function RayfieldLibrary:CreateWindow(Settings)
 					Input.UserInputType == Enum.UserInputType.MouseButton1
 					or Input.UserInputType == Enum.UserInputType.Touch
 				then
-					TweenService:Create(
-						Slider.Main.UIStroke,
-						TweenInfo.new(0.6, Enum.EasingStyle.Exponential),
-						{ Transparency = 0.4 }
-					):Play()
-					TweenService:Create(
-						Slider.Main.Progress.UIStroke,
-						TweenInfo.new(0.6, Enum.EasingStyle.Exponential),
-						{ Transparency = 0.3 }
-					):Play()
-					SLDragging = false
+					finishSliderDrag()
 				end
-			end)
-
-			Slider.Main.Interact.MouseButton1Down:Connect(function(X)
-				local Current = Slider.Main.Progress.AbsolutePosition.X + Slider.Main.Progress.AbsoluteSize.X
-				local Start = Current
-				local Location = X
-				local Loop
-				Loop = RunService.Stepped:Connect(function()
-					if SLDragging then
-						Location = UserInputService:GetMouseLocation().X
-						Current = Current + 0.025 * (Location - Start)
-
-						if Location < Slider.Main.AbsolutePosition.X then
-							Location = Slider.Main.AbsolutePosition.X
-						elseif Location > Slider.Main.AbsolutePosition.X + Slider.Main.AbsoluteSize.X then
-							Location = Slider.Main.AbsolutePosition.X + Slider.Main.AbsoluteSize.X
-						end
-
-						if Current < Slider.Main.AbsolutePosition.X + 5 then
-							Current = Slider.Main.AbsolutePosition.X + 5
-						elseif Current > Slider.Main.AbsolutePosition.X + Slider.Main.AbsoluteSize.X then
-							Current = Slider.Main.AbsolutePosition.X + Slider.Main.AbsoluteSize.X
-						end
-
-						if Current <= Location and (Location - Start) < 0 then
-							Start = Location
-						elseif Current >= Location and (Location - Start) > 0 then
-							Start = Location
-						end
-						TweenService:Create(
-							Slider.Main.Progress,
-							TweenInfo.new(0.45, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out),
-							{ Size = UDim2.new(0, Current - Slider.Main.AbsolutePosition.X, 1, 0) }
-						):Play()
-						local NewValue = SliderSettings.Range[1]
-							+ (Location - Slider.Main.AbsolutePosition.X)
-								/ Slider.Main.AbsoluteSize.X
-								* (SliderSettings.Range[2] - SliderSettings.Range[1])
-
-						NewValue = math.floor(NewValue / SliderSettings.Increment + 0.5)
-							* (SliderSettings.Increment * 10000000)
-							/ 10000000
-						NewValue = math.clamp(NewValue, SliderSettings.Range[1], SliderSettings.Range[2])
-
-						if not SliderSettings.Suffix then
-							Slider.Main.Information.Text = tostring(NewValue)
-						else
-							Slider.Main.Information.Text = tostring(NewValue) .. " " .. SliderSettings.Suffix
-						end
-
-						if SliderSettings.CurrentValue ~= NewValue then
-							local Success, Response = pcall(function()
-								SliderSettings.Callback(NewValue)
-							end)
-							if not Success then
-								TweenService:Create(
-									Slider,
-									TweenInfo.new(0.6, Enum.EasingStyle.Exponential),
-									{ BackgroundColor3 = Color3.fromRGB(85, 0, 0) }
-								):Play()
-								TweenService:Create(
-									Slider.UIStroke,
-									TweenInfo.new(0.6, Enum.EasingStyle.Exponential),
-									{ Transparency = 1 }
-								):Play()
-								Slider.Title.Text = "Callback Error"
-								print("Rayfield | " .. SliderSettings.Name .. " Callback Error " .. tostring(Response))
-								warn("Check docs.sirius.menu for help with Rayfield specific development.")
-								task.wait(0.5)
-								Slider.Title.Text = SliderSettings.Name
-								TweenService:Create(
-									Slider,
-									TweenInfo.new(0.6, Enum.EasingStyle.Exponential),
-									{ BackgroundColor3 = SelectedTheme.ElementBackground }
-								):Play()
-								TweenService:Create(
-									Slider.UIStroke,
-									TweenInfo.new(0.6, Enum.EasingStyle.Exponential),
-									{ Transparency = 0 }
-								):Play()
-							end
-
-							SliderSettings.CurrentValue = NewValue
-							if not SliderSettings.Ext then
-								SaveConfiguration()
-							end
-						end
-					else
-						TweenService:Create(
-							Slider.Main.Progress,
-							TweenInfo.new(0.3, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out),
-							{
-								Size = UDim2.new(
-									0,
-									Location - Slider.Main.AbsolutePosition.X > 5
-											and Location - Slider.Main.AbsolutePosition.X
-										or 5,
-									1,
-									0
-								),
-							}
-						):Play()
-						Loop:Disconnect()
-					end
-				end)
 			end)
 
 			function SliderSettings:Set(NewVal)
-				local NewVal = math.clamp(NewVal, SliderSettings.Range[1], SliderSettings.Range[2])
-
-				TweenService
-					:Create(
-						Slider.Main.Progress,
-						TweenInfo.new(0.45, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out),
-						{
-							Size = UDim2.new(
-								0,
-								Slider.Main.AbsoluteSize.X
-												* ((NewVal - SliderSettings.Range[1]) / (SliderSettings.Range[2] - SliderSettings.Range[1]))
-											> 5
-										and Slider.Main.AbsoluteSize.X * ((NewVal - SliderSettings.Range[1]) / (SliderSettings.Range[2] - SliderSettings.Range[1]))
-									or 5,
-								1,
-								0
-							),
-						}
-					)
-					:Play()
-				Slider.Main.Information.Text = tostring(NewVal) .. " " .. (SliderSettings.Suffix or "")
-
-				local Success, Response = pcall(function()
-					SliderSettings.Callback(NewVal)
-				end)
-
-				if not Success then
-					TweenService:Create(
-						Slider,
-						TweenInfo.new(0.6, Enum.EasingStyle.Exponential),
-						{ BackgroundColor3 = Color3.fromRGB(85, 0, 0) }
-					):Play()
-					TweenService
-						:Create(Slider.UIStroke, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), { Transparency = 1 })
-						:Play()
-					Slider.Title.Text = "Callback Error"
-					print("Rayfield | " .. SliderSettings.Name .. " Callback Error " .. tostring(Response))
-					warn("Check docs.sirius.menu for help with Rayfield specific development.")
-					task.wait(0.5)
-					Slider.Title.Text = SliderSettings.Name
-					TweenService:Create(
-						Slider,
-						TweenInfo.new(0.6, Enum.EasingStyle.Exponential),
-						{ BackgroundColor3 = SelectedTheme.ElementBackground }
-					):Play()
-					TweenService
-						:Create(Slider.UIStroke, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), { Transparency = 0 })
-						:Play()
-				end
-
-				SliderSettings.CurrentValue = NewVal
-				if not SliderSettings.Ext then
-					SaveConfiguration()
-				end
+				applySliderValue(NewVal, true, true, true)
 			end
 
 			if Settings.ConfigurationSaving then
@@ -4921,6 +5101,7 @@ function RayfieldLibrary:CreateWindow(Settings)
 				Slider.Main.UIStroke.Color = SelectedTheme.SliderStroke
 				Slider.Main.Progress.UIStroke.Color = SelectedTheme.SliderStroke
 				Slider.Main.Progress.BackgroundColor3 = SelectedTheme.SliderProgress
+				setSliderVisual(SliderSettings.CurrentValue, false)
 			end)
 
 			return SliderSettings
@@ -5084,6 +5265,8 @@ function RayfieldLibrary:CreateWindow(Settings)
 		})
 	end
 
+	task.defer(syncActiveTab, true, true)
+
 	return Window
 end
 
@@ -5113,6 +5296,9 @@ function RayfieldLibrary:Destroy()
 	rayfieldDestroyed = true
 	if hideHotkeyConnection then
 		hideHotkeyConnection:Disconnect()
+	end
+	if typographyConnection then
+		typographyConnection:Disconnect()
 	end
 	for _, connection in keybindConnections do
 		connection:Disconnect()
@@ -5251,7 +5437,11 @@ if Topbar:FindFirstChild("Settings") then
 				end
 			end
 
-			Elements.UIPageLayout:JumpTo(Elements["Rayfield Settings"])
+			local settingsPage = Elements:FindFirstChild("Rayfield Settings")
+			if settingsPage then
+				ActiveTabPage = settingsPage
+				syncActiveTab(false, true)
+			end
 		end)
 	end)
 end
@@ -5358,6 +5548,7 @@ function RayfieldLibrary:LoadConfiguration()
 	end
 
 	globalLoaded = true
+	task.defer(syncActiveTab, true, true)
 end
 
 if useStudio then
