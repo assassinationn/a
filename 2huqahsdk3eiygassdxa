@@ -1347,6 +1347,7 @@ local function spawnNotification(container, data)
 		newNotification.Parent = container
 		newNotification.LayoutOrder = #container:GetChildren()
 		newNotification.Visible = false
+		newNotification.Active = false
 
 		-- Set Data
 		newNotification.Title.Text = data.Title or "Unknown Title"
