@@ -10,6 +10,10 @@
 
 ]]
 
+local function print() end
+local function warn() end
+local function error() end
+
 
 if debugX then
 	warn("Initialising Rayfield")
