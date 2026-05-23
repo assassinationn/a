@@ -10,17 +10,6 @@
 
 ]]
 
-local function warn()
-	return nil
-end
-
-local function print()
-	return nil
-end
-
-local function error()
-	return nil
-end
 
 if debugX then
 	warn("Initialising Rayfield")
