@@ -3618,55 +3618,6 @@ do
 					CornerRadius = UDim.new(0, 14),
 				})
 
-				Items["Hide"] = Library:Create("Frame", {
-					Name = "\0",
-					Parent = Items["Inline"].Instance,
-					Visible = true,
-					BackgroundTransparency = 1,
-					Size = UDim2.new(1, 0, 1, 0),
-					BorderSizePixel = 0,
-				})
-
-				Items["Top"] = Library:Create("Frame", {
-					Name = "\0",
-					Parent = Items["Hide"].Instance,
-					AnchorPoint = Vector2.new(0.5, 0),
-					Position = UDim2.new(0.5, 0, 0, -1),
-					Size = UDim2.new(0, 0, 0, 1),
-					BorderSizePixel = 0,
-					BackgroundColor3 = Library.Theme["Tab"],
-				}):AddToTheme({ BackgroundColor3 = "Tab" })
-
-				Items["Bottom"] = Library:Create("Frame", {
-					Name = "\0",
-					Parent = Items["Hide"].Instance,
-					AnchorPoint = Vector2.new(0.5, 1),
-					Position = UDim2.new(0.5, 0, 1, 1),
-					Size = UDim2.new(0, 0, 0, 1),
-					BorderSizePixel = 0,
-					BackgroundColor3 = Library.Theme["Tab"],
-				}):AddToTheme({ BackgroundColor3 = "Tab" })
-
-				Items["Right"] = Library:Create("Frame", {
-					Name = "\0",
-					Parent = Items["Hide"].Instance,
-					AnchorPoint = Vector2.new(1, 0.5),
-					Position = UDim2.new(1, 1, 0.5, 0),
-					Size = UDim2.new(0, 1, 0, 0),
-					BorderSizePixel = 0,
-					BackgroundColor3 = Library.Theme["Tab"],
-				}):AddToTheme({ BackgroundColor3 = "Tab" })
-
-				Items["Left"] = Library:Create("Frame", {
-					Name = "\0",
-					Parent = Items["Hide"].Instance,
-					AnchorPoint = Vector2.new(1, 0.5),
-					Position = UDim2.new(0, 0, 0.5, 0),
-					Size = UDim2.new(0, 1, 0, 0),
-					BorderSizePixel = 0,
-					BackgroundColor3 = Library.Theme["Tab"],
-				}):AddToTheme({ BackgroundColor3 = "Tab" })
-
 				Items["Icon"] = Library:Create("ImageLabel", {
 					Name = "\0",
 					Parent = Items["Inline"].Instance,
@@ -3777,23 +3728,7 @@ do
 			end)
 
 			function Page:TweenSides(Bool)
-				if Bool then
-					Items["Top"]:Tween({ Size = UDim2.new(0, 22, 0, 1) })
-					Items["Bottom"]:Tween({ Size = UDim2.new(0, 22, 0, 1) })
-
-					--
-
-					Items["Left"]:Tween({ Size = UDim2.new(0, 1, 0, 22) })
-					Items["Right"]:Tween({ Size = UDim2.new(0, 1, 0, 22) })
-				else
-					Items["Top"]:Tween({ Size = UDim2.new(0, 0, 0, 1) })
-					Items["Bottom"]:Tween({ Size = UDim2.new(0, 0, 0, 1) })
-
-					--
-
-					Items["Left"]:Tween({ Size = UDim2.new(0, 1, 0, 0) })
-					Items["Right"]:Tween({ Size = UDim2.new(0, 1, 0, 0) })
-				end
+				-- Border animation removed; keep the solid selected fill and icon color only.
 			end
 
 			function Page:Turn()
