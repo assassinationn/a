@@ -230,10 +230,35 @@ do
 
 	Library.Theme = Themes.Preset
 
-	-- Font
-	-- Change this one line if you want a different built-in Roblox font.
-	Library.FontChoice = Enum.Font.BuilderSansMedium
-	Library.Font = Font.fromEnum(Library.FontChoice)
+	-- Custom Font
+	local CustomFont = {}
+	do
+		function CustomFont:New(Name, Weight, Style, Data)
+			if not isfile(Data.Id) then
+				writefile(Data.Id, game:HttpGet(Data.Url))
+			end
+
+			local Data = {
+				name = Name,
+				faces = {
+					{
+						name = Name,
+						weight = Weight,
+						style = Style,
+						assetId = getcustomasset(Data.Id),
+					},
+				},
+			}
+
+			writefile(`{Library.Directory .. Library.Folders.Assets}/{Name}.font`, HttpService:JSONEncode(Data))
+			return Font.new(getcustomasset(`{Library.Directory .. Library.Folders.Assets}/{Name}.font`))
+		end
+
+		Library.Font = CustomFont:New("inter-Semibold", 400, "Regular", {
+			Id = "Inter-Semibold",
+			Url = "https://github.com/sametexe001/luas/raw/refs/heads/main/fonts/Inter-SemiBold.ttf",
+		})
+	end
 
 	Library.Exit = function(Self)
 		for _, Connection in Library.Connections do
