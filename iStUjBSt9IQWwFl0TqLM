@@ -272,6 +272,16 @@ do
 		getgenv().Library = nil
 	end
 
+	Library.Unload = function(Self)
+		getgenv().LibraryUnloading = true
+
+		if type(Library.Exit) == "function" then
+			pcall(Library.Exit, Library)
+		end
+
+		getgenv().LibraryUnloading = false
+	end
+
 	Library.Create = function(Self, Class, Properties)
 		local Data = {
 			Class = Class,
@@ -880,7 +890,7 @@ do
 	})
 
 	do
-		Library.CreateColorpicker = function(Self, Data)
+		Library.CreateColorPicker = function(Self, Data)
 			local Colorpicker = {
 				Hue = 0,
 				Saturation = 0,
@@ -3458,7 +3468,7 @@ do
 
 			do -- Theming
 				for Index, Value in Library.Theme do
-					ThemeTab:Label({ Name = Index }):Colorpicker({
+					ThemeTab:Label({ Name = Index }):ColorPicker({
 						Flag = "Theme" .. Index,
 						Default = Value,
 						Parent = ThemeTab.Items["Content"],
@@ -4063,7 +4073,7 @@ do
 				Items["Text"].Instance.Text = tostring(Text)
 			end
 
-			function Toggle:Colorpicker(Data)
+			function Toggle:ColorPicker(Data)
 				Data = Data or {}
 
 				local Colorpicker = {
@@ -4077,7 +4087,7 @@ do
 					Section = Toggle.Section,
 				}
 
-				local NewColorpicker, ColorpickerItems = Library:CreateColorpicker({
+				local NewColorpicker, ColorpickerItems = Library:CreateColorPicker({
 					Parent = Items["SubElements"],
 					Page = Colorpicker.Page,
 					Section = Colorpicker.Section,
@@ -5545,7 +5555,7 @@ do
 				Items["Text"].Instance.Text = tostring(Text)
 			end
 
-			function Label:Colorpicker(Data)
+			function Label:ColorPicker(Data)
 				Data = Data or {}
 
 				local Colorpicker = {
