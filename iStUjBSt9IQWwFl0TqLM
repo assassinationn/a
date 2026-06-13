@@ -232,7 +232,7 @@ do
 
 	-- Font
 	-- Change this one line if you want a different built-in Roblox font.
-	Library.FontChoice = Enum.Font.GothamSemibold
+	Library.FontChoice = Enum.Font.BuilderSansMedium
 	Library.Font = Font.fromEnum(Library.FontChoice)
 
 	Library.Exit = function(Self)
