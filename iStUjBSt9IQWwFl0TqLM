@@ -1,12 +1,3 @@
---[[
-    Made by samet
-
-    example/documentation is at the bottom
-    date: 5/9/2026 11:40 PM
-
-    If you have any issues or bugs, please let me know in the ticket or dms.
-]]
-
 if getgenv().Library and getgenv().Library.Exit then
 	getgenv().Library:Exit()
 end
@@ -254,9 +245,9 @@ do
 			return Font.new(getcustomasset(`{Library.Directory .. Library.Folders.Assets}/{Name}.font`))
 		end
 
-		Library.Font = CustomFont:New("interSemibold", 400, "Regular", {
-			Id = "InterSemibold",
-			Url = "https://github.com/sametexe001/luas/raw/refs/heads/main/fonts/InterSemibold.ttf",
+		Library.Font = CustomFont:New("inter", 400, "Regular", {
+			Id = "Inter",
+			Url = "https://github.com/sametexe001/luas/raw/refs/heads/main/fonts/Inter.ttf",
 		})
 	end
 
