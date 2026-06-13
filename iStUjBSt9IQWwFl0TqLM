@@ -256,7 +256,7 @@ do
 
 		Library.Font = CustomFont:New("interSemibold", 400, "Regular", {
 			Id = "InterSemibold",
-			Url = "https://github.com/sametexe001/luas/raw/refs/heads/main/fonts/InterSemiBold.ttf",
+			Url = "https://github.com/sametexe001/luas/raw/refs/heads/main/fonts/InterSemibold.ttf",
 		})
 	end
 
