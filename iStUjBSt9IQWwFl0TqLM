@@ -1997,7 +1997,12 @@ do
 			local KeybindObject
 
 			if Library.KeyList then
-				KeybindObject = Library.KeyList:Add("")
+				KeybindObject = Library.KeyList:AddBind({
+					Flag = Data.Flag,
+					Name = Data.Name,
+					Mode = Keybind.Toggled and "On" or "Off",
+					Toggled = Keybind.Toggled,
+				})
 			end
 
 			local Update = function()
@@ -2521,6 +2526,7 @@ do
 			local KeybindList = {
 				Name = Params.Name or Params.name or "Keybind List",
 
+				Binds = {},
 				Items = {},
 			}
 
@@ -2614,7 +2620,24 @@ do
 				Items["KeybindList"].Instance.Visible = Bool
 			end
 
-			function KeybindList:Add(Name)
+			function KeybindList:AddBind(Flag, Name, Mode, Toggled)
+				if type(Flag) == "table" then
+					local Data = Flag
+					Flag = Data.Flag or Data.flag or Data.Name or Data.name
+					Name = Data.Name or Data.name or Flag
+					Mode = Data.Mode or Data.mode
+					Toggled = Data.Toggled == true or Data.toggled == true
+				end
+
+				local BindFlag = tostring(Flag or "")
+				local BindName = tostring(Name or BindFlag)
+				local BindMode = tostring(Mode or "On")
+				local BindToggled = Toggled == true
+
+				if BindFlag ~= "" and KeybindList.Binds[BindFlag] then
+					KeybindList:RemoveBind(BindFlag)
+				end
+
 				local NewKey = Library:Create("Frame", {
 					Name = "\0",
 					Parent = Items["Content"].Instance,
@@ -2629,7 +2652,7 @@ do
 					TextSize = Library.FontSize,
 					Parent = NewKey.Instance,
 					TextColor3 = Library.Theme["Text"],
-					Text = Name,
+					Text = BindName,
 					AnchorPoint = Vector2.new(0, 0.5),
 					BackgroundTransparency = 1,
 					Position = UDim2.new(0, 25, 0.5, 0),
@@ -2654,7 +2677,7 @@ do
 					TextSize = Library.FontSize,
 					Parent = NewKey.Instance,
 					TextColor3 = Library.Theme["Dark Text"],
-					Text = "On",
+					Text = BindMode,
 					AnchorPoint = Vector2.new(1, 0.5),
 					BackgroundTransparency = 1,
 					Position = UDim2.new(1, 0, 0.5, 0),
@@ -2686,7 +2709,40 @@ do
 					NewMode.Instance.Text = Mode
 				end
 
+				function NewKey:Destroy()
+					if BindFlag ~= "" and KeybindList.Binds[BindFlag] == NewKey then
+						KeybindList.Binds[BindFlag] = nil
+					end
+
+					NewKey.Instance:Destroy()
+				end
+
+				NewKey.Flag = BindFlag
+				NewKey:Set(BindName)
+				NewKey:SetMode(BindMode)
+				NewKey:SetStatus(BindToggled)
+
+				if BindFlag ~= "" then
+					KeybindList.Binds[BindFlag] = NewKey
+				end
+
 				return NewKey
+			end
+
+			function KeybindList:Add(Name)
+				return KeybindList:AddBind(Name, Name)
+			end
+
+			function KeybindList:RemoveBind(Flag)
+				local BindFlag = tostring(Flag or "")
+				local Existing = KeybindList.Binds[BindFlag]
+
+				if not Existing then
+					return false
+				end
+
+				Existing:Destroy()
+				return true
 			end
 
 			KeybindList:Center()
