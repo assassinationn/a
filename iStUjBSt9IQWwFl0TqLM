@@ -101,6 +101,13 @@ local Library = {
 	ThemeMap = {},
 
 	SearchItems = {},
+	ConfigState = {
+		AutoLoad = false,
+		Name = "",
+		Delay = 0.25,
+		Silent = false,
+	},
+	ConfigAutoLoadFile = "AutoLoad.json",
 
 	OpenFrames = {},
 
@@ -764,6 +771,85 @@ do
 		end)
 
 		return Success, Result
+	end
+
+	Library.LoadConfigFile = function(Self, ConfigName)
+		local Name = tostring(ConfigName or "")
+
+		if Name == "" then
+			return false, "Missing config name"
+		end
+
+		local Path = Library.Directory .. Library.Folders.Configs .. "/" .. Name
+
+		if Path:sub(-5) ~= ".json" then
+			Path = Path .. ".json"
+		end
+
+		if not isfile(Path) then
+			return false, "Config file not found"
+		end
+
+		return Library:LoadConfig(readfile(Path))
+	end
+
+	Library.AutoLoadConfig = function(Self, ConfigName, Delay, Silent)
+		Library.ConfigState.AutoLoad = true
+		Library.ConfigState.Name = tostring(ConfigName or "")
+		Library.ConfigState.Delay = tonumber(Delay) or Library.ConfigState.Delay
+		Library.ConfigState.Silent = Silent == true
+
+		task.spawn(function()
+			task.wait(Library.ConfigState.Delay)
+
+			if getgenv().LibraryUnloading or getgenv().Library ~= Library then
+				return
+			end
+
+			local Success, Result = Library:LoadConfigFile(Library.ConfigState.Name)
+
+			if not Library.ConfigState.Silent then
+				if Success then
+					Library:Notification("Successfully loaded config", 3, Color3.fromRGB(0, 255, 0))
+				elseif Result then
+					Library:Notification(
+						"Failed to auto load config: \n" .. Result,
+						3,
+						Color3.fromRGB(255, 0, 0)
+					)
+				end
+			end
+		end)
+	end
+
+	Library.SaveAutoLoadState = function(Self, Enabled, ConfigName)
+		local Path = Library.Directory .. "/" .. Library.ConfigAutoLoadFile
+		local State = {
+			Enabled = Enabled == true,
+			Name = tostring(ConfigName or ""),
+		}
+
+		pcall(function()
+			writefile(Path, HttpService:JSONEncode(State))
+		end)
+	end
+
+	Library.LoadAutoLoadState = function(Self)
+		local Path = Library.Directory .. "/" .. Library.ConfigAutoLoadFile
+
+		if not isfile(Path) then
+			return false, ""
+		end
+
+		local Success, Result = pcall(function()
+			return HttpService:JSONDecode(readfile(Path))
+		end)
+
+		if not Success then
+			return false, ""
+		end
+
+		return Result.Enabled == true, tostring(Result.Name or "")
 	end
 
 	Library.GetConfigsList = function(Self, Element)
@@ -2652,6 +2738,32 @@ do
 				Current = nil,
 			}
 
+			local AutoLoadConfig = Params.AutoLoadConfig or Params.AutoLoad or Params.Config or Params.ConfigName
+			local AutoLoadDelay = tonumber(Params.AutoLoadDelay or Params.Delay) or 0.25
+			local AutoLoadSilent = Params.AutoLoadSilent == true or Params.Silent == true
+
+			if not AutoLoadConfig then
+				local SavedAutoLoadEnabled, SavedAutoLoadName = Library:LoadAutoLoadState()
+
+				if SavedAutoLoadEnabled and SavedAutoLoadName ~= "" then
+					AutoLoadConfig = SavedAutoLoadName
+					AutoLoadSilent = true
+				end
+			end
+
+			if type(AutoLoadConfig) == "table" then
+				AutoLoadSilent = AutoLoadConfig.Silent == true or AutoLoadConfig.silent == true
+				AutoLoadDelay = tonumber(AutoLoadConfig.Delay or AutoLoadConfig.delay) or AutoLoadDelay
+				AutoLoadConfig = AutoLoadConfig.Name
+					or AutoLoadConfig.name
+					or AutoLoadConfig.FileName
+					or AutoLoadConfig.filename
+					or AutoLoadConfig.Config
+					or AutoLoadConfig.config
+			elseif AutoLoadConfig == true then
+				AutoLoadConfig = Params.ConfigName or Params.Name or Params.FileName or Params.AutoLoadName
+			end
+
 			local Items = {}
 			do
 				if IsMobile then
@@ -3368,6 +3480,7 @@ do
 			do -- Configs
 				local ConfigName
 				local ConfigSelected
+				local AutoLoadEnabled, AutoLoadName = Library:LoadAutoLoadState()
 				local ConfigsFolder = Library.Directory .. Library.Folders.Configs .. "/"
 
 				local ConfigsDropdown = ConfigsTab:Dropdown({
@@ -3378,6 +3491,29 @@ do
 					Multi = false,
 					Callback = function(Value)
 						ConfigSelected = Value
+					end,
+				})
+
+				local AutoLoadDropdown = ConfigsTab:Dropdown({
+					Name = "Autoload config",
+					Flag = "AutoLoadConfig",
+					Items = {},
+					Parent = ConfigsTab.Items["Content"],
+					Multi = false,
+					Default = AutoLoadName,
+					Callback = function(Value)
+						AutoLoadName = Value or ""
+						Library:SaveAutoLoadState(AutoLoadEnabled, AutoLoadName)
+					end,
+				})
+
+				ConfigsTab:Toggle({
+					Name = "Enable autoload",
+					Flag = "AutoLoadEnabled",
+					Default = AutoLoadEnabled,
+					Callback = function(Value)
+						AutoLoadEnabled = Value == true
+						Library:SaveAutoLoadState(AutoLoadEnabled, AutoLoadName)
 					end,
 				})
 
@@ -3400,6 +3536,7 @@ do
 
 							writefile(ConfigsFolder .. ConfigName .. ".json", Library:GetConfig())
 							Library:GetConfigsList(ConfigsDropdown)
+							Library:GetConfigsList(AutoLoadDropdown)
 							Library:Notification("Succesfully created config", 3, Color3.fromRGB(0, 255, 0))
 						end
 					end,
@@ -3411,7 +3548,18 @@ do
 						if ConfigSelected then
 							if isfile(ConfigsFolder .. ConfigSelected .. ".json") then
 								delfile(ConfigsFolder .. ConfigSelected .. ".json")
+
+								if AutoLoadName == ConfigSelected then
+									AutoLoadName = ""
+									AutoLoadEnabled = false
+									Library:SaveAutoLoadState(false, "")
+									AutoLoadDropdown.Value = ""
+									Flags["AutoLoadConfig"] = ""
+									AutoLoadDropdown:SetText("...")
+								end
+
 								Library:GetConfigsList(ConfigsDropdown)
+								Library:GetConfigsList(AutoLoadDropdown)
 
 								Library:Notification("Succesfully deleted config", 3, Color3.fromRGB(0, 255, 0))
 							end
@@ -3428,6 +3576,7 @@ do
 								local Success, Error = Library:LoadConfig(ConfigContent)
 
 								if Success then
+									Library:GetConfigsList(AutoLoadDropdown)
 									Library:Notification("Succesfully loaded config", 3, Color3.fromRGB(0, 255, 0))
 								else
 									Library:Notification(
@@ -3451,6 +3600,7 @@ do
 								end)
 
 								if Success then
+									Library:GetConfigsList(AutoLoadDropdown)
 									Library:Notification("Succesfully saved config", 3, Color3.fromRGB(0, 255, 0))
 								else
 									Library:Notification(
@@ -3468,10 +3618,16 @@ do
 					Name = "Refresh",
 					Callback = function()
 						Library:GetConfigsList(ConfigsDropdown)
+						Library:GetConfigsList(AutoLoadDropdown)
 					end,
 				})
 
 				Library:GetConfigsList(ConfigsDropdown)
+				Library:GetConfigsList(AutoLoadDropdown)
+
+				if AutoLoadName ~= "" then
+					AutoLoadDropdown:Set(AutoLoadName)
+				end
 			end
 
 			do -- Theming
@@ -3576,6 +3732,10 @@ do
 					Items["OpenAndClose"].Instance.Text = Window.IsOpen and "Close" or "Open"
 				end
 			end)
+
+			if type(AutoLoadConfig) == "string" and AutoLoadConfig ~= "" then
+				Library:AutoLoadConfig(AutoLoadConfig, AutoLoadDelay, AutoLoadSilent)
+			end
 
 			Window:Center()
 			return setmetatable(Window, Library)
