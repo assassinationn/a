@@ -106,6 +106,11 @@ local Library = {
 		Name = "",
 		Delay = 0.25,
 		Silent = false,
+		AutoSave = false,
+		AutoSaveReady = false,
+		Loading = false,
+		SaveToken = 0,
+		SaveDelay = 0.25,
 	},
 	ConfigAutoLoadFile = "AutoLoad.json",
 
@@ -281,6 +286,17 @@ do
 
 	Library.Unload = function(Self)
 		getgenv().LibraryUnloading = true
+
+		if
+			Library.ConfigState
+			and Library.ConfigState.AutoSave
+			and Library.ConfigState.AutoSaveReady
+			and tostring(Library.ConfigState.Name or "") ~= ""
+		then
+			pcall(function()
+				Library:SaveConfigFile(Library.ConfigState.Name)
+			end)
+		end
 
 		if type(Library.Exit) == "function" then
 			pcall(Library.Exit, Library)
@@ -751,6 +767,7 @@ do
 
 	Library.LoadConfig = function(Self, Config)
 		local Decoded = HttpService:JSONDecode(Config)
+		Library.ConfigState.Loading = true
 
 		local Success, Result = Library:SafeCall(function()
 			for Index, Value in Decoded do
@@ -770,7 +787,79 @@ do
 			end
 		end)
 
+		Library.ConfigState.Loading = false
 		return Success, Result
+	end
+
+	Library.GetConfigPath = function(Self, ConfigName)
+		local Name = tostring(ConfigName or "")
+
+		if Name == "" then
+			return nil
+		end
+
+		local Path = Library.Directory .. Library.Folders.Configs .. "/" .. Name
+
+		if Path:sub(-5) ~= ".json" then
+			Path = Path .. ".json"
+		end
+
+		return Path
+	end
+
+	Library.SaveConfigFile = function(Self, ConfigName)
+		local Path = Library:GetConfigPath(ConfigName or Library.ConfigState.Name)
+
+		if not Path then
+			return false, "Missing config name"
+		end
+
+		local Config = Library:GetConfig()
+
+		if not Config then
+			return false, "Failed to serialize config"
+		end
+
+		local Success, Result = pcall(function()
+			writefile(Path, Config)
+		end)
+
+		if not Success then
+			return false, Result
+		end
+
+		return true
+	end
+
+	Library.QueueConfigSave = function(Self)
+		local State = Library.ConfigState
+
+		if not State.AutoSave or not State.AutoSaveReady or State.Loading then
+			return
+		end
+
+		if tostring(State.Name or "") == "" then
+			return
+		end
+
+		State.SaveToken = (State.SaveToken or 0) + 1
+		local Token = State.SaveToken
+
+		task.delay(State.SaveDelay or 0.25, function()
+			if getgenv().LibraryUnloading or getgenv().Library ~= Library then
+				return
+			end
+
+			if State.Loading or not State.AutoSave or not State.AutoSaveReady then
+				return
+			end
+
+			if State.SaveToken ~= Token then
+				return
+			end
+
+			Library:SaveConfigFile(State.Name)
+		end)
 	end
 
 	Library.LoadConfigFile = function(Self, ConfigName)
@@ -1284,6 +1373,8 @@ do
 				if Data.Callback then
 					Library:SafeCall(Data.Callback, Colorpicker.Color, Colorpicker.Alpha)
 				end
+
+				Library:QueueConfigSave()
 			end
 
 			local Debounce = false
@@ -1948,6 +2039,7 @@ do
 				end
 
 				Update()
+				Library:QueueConfigSave()
 			end
 
 			function Keybind:Press(Bool)
@@ -1974,6 +2066,7 @@ do
 				end
 
 				Update()
+				Library:QueueConfigSave()
 			end
 
 			function Keybind:Set(Key)
@@ -2034,6 +2127,7 @@ do
 
 				Keybind.Picking = false
 				Update()
+				Library:QueueConfigSave()
 			end
 
 			Items["KeyButton"]:Connect("MouseButton1Click", function()
@@ -2728,6 +2822,7 @@ do
 
 		Library.Window = function(Self, Params)
 			Params = Params or {}
+			local PersistentConfigName = tostring(Params.ConfigName or Params.Name or Params.FileName or "")
 
 			local Window = {
 				Logo = Params.Logo or Params.logo or "rbxassetid://77749228793011",
@@ -2762,6 +2857,22 @@ do
 					or AutoLoadConfig.config
 			elseif AutoLoadConfig == true then
 				AutoLoadConfig = Params.ConfigName or Params.Name or Params.FileName or Params.AutoLoadName
+			end
+
+			if PersistentConfigName ~= "" then
+				Library.ConfigState.AutoSave = true
+				Library.ConfigState.AutoSaveReady = false
+				Library.ConfigState.Loading = false
+				Library.ConfigState.Name = PersistentConfigName
+				Library.ConfigState.SaveToken = 0
+				Library.ConfigState.SaveDelay = tonumber(Params.SaveDelay or Params.AutoSaveDelay) or 0.25
+			else
+				Library.ConfigState.AutoSave = false
+				Library.ConfigState.AutoSaveReady = false
+				Library.ConfigState.Loading = false
+				Library.ConfigState.Name = ""
+				Library.ConfigState.SaveToken = 0
+				Library.ConfigState.SaveDelay = 0.25
 			end
 
 			local Items = {}
@@ -3737,6 +3848,16 @@ do
 				Library:AutoLoadConfig(AutoLoadConfig, AutoLoadDelay, AutoLoadSilent)
 			end
 
+			if PersistentConfigName ~= "" then
+				local PersistentConfigPath = Library:GetConfigPath(PersistentConfigName)
+
+				if PersistentConfigPath and not isfile(PersistentConfigPath) then
+					Library:SaveConfigFile(PersistentConfigName)
+				end
+
+				Library.ConfigState.AutoSaveReady = true
+			end
+
 			Window:Center()
 			return setmetatable(Window, Library)
 		end
@@ -4232,6 +4353,7 @@ do
 
 				Flags[Toggle.Flag] = Bool
 				Library:SafeCall(Toggle.Callback, Bool)
+				Library:QueueConfigSave()
 			end
 
 			function Toggle:SetVisibility(Bool)
@@ -4765,6 +4887,7 @@ do
 
 				Flags[Slider.Flag] = Slider.Value
 				Library:SafeCall(Slider.Callback, Slider.Value)
+				Library:QueueConfigSave()
 			end
 
 			function Slider:SetVisibility(Bool)
@@ -5367,6 +5490,7 @@ do
 				end
 
 				Library:SafeCall(Dropdown.Callback, Dropdown.Value)
+				Library:QueueConfigSave()
 			end
 
 			function Dropdown:Add(Value)
@@ -5907,6 +6031,7 @@ do
 				Flags[Textbox.Flag] = Value
 
 				Library:SafeCall(Textbox.Callback, Value)
+				Library:QueueConfigSave()
 			end
 
 			if Textbox.Finished then
