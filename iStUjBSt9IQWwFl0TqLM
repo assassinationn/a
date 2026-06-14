@@ -5349,6 +5349,7 @@ do
 				Default = Params.Default or Params.default or "",
 				Callback = Params.Callback or Params.callback or function() end,
 				Multi = Params.Multi or Params.multi or false,
+				MaxSize = Params.MaxSize or Params.maxSize or 200,
 				Tooltip = Params.Tooltip or Params.tooltip or "",
 
 				Window = Self.Window,
@@ -5450,23 +5451,26 @@ do
 					BorderSizePixel = 0,
 				})
 
-				Items["OptionHolder"] = Library:Create("TextButton", {
+				Items["OptionHolder"] = Library:Create("ScrollingFrame", {
 					Name = "\0",
-					FontFace = Library.Font,
-					TextSize = Library.FontSize,
 					Parent = Library.UnusedHolder.Instance,
 					Visible = false,
-					TextColor3 = Color3.fromRGB(0, 0, 0),
-					Text = "",
-					AutoButtonColor = false,
-					Size = UDim2.new(0, 249, 0, 50),
-					BackgroundTransparency = 0.10000000149011612,
-					Position = UDim2.new(0, 15, 0, 164),
+					Active = true,
+					AutomaticCanvasSize = Enum.AutomaticSize.Y,
+					CanvasSize = UDim2.new(0, 0, 0, 0),
 					ClipsDescendants = true,
+					Size = UDim2.new(0, 249, 0, 50),
+					Position = UDim2.new(0, 15, 0, 164),
 					BorderSizePixel = 0,
-					AutomaticSize = Enum.AutomaticSize.Y,
+					BackgroundTransparency = 0.10000000149011612,
+					ScrollBarImageColor3 = Library.Theme["Dark Icon"],
+					ScrollBarThickness = 2,
+					ScrollingDirection = Enum.ScrollingDirection.Y,
 					BackgroundColor3 = Library.Theme["Background"],
-				}):AddToTheme({ BackgroundColor3 = "Background" })
+					MidImage = "rbxassetid://81680855285439",
+					TopImage = "rbxassetid://81680855285439",
+					BottomImage = "rbxassetid://81680855285439",
+				}):AddToTheme({ BackgroundColor3 = "Background", ScrollBarImageColor3 = "Dark Icon" })
 
 				Library:Create("UICorner", {
 					Name = "\0",
@@ -5718,6 +5722,7 @@ do
 						0,
 						RealDropdown.AbsolutePosition.Y + RealDropdown.AbsoluteSize.Y + GuiInset
 					)
+					OptionHolder.CanvasPosition = Vector2.new(0, 0)
 					OptionHolder.Size = UDim2.new(0, RealDropdown.AbsoluteSize.X, 0, Dropdown.MaxSize)
 
 					OptionHolder.Parent = Library.Holder.Instance
