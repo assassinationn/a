@@ -365,6 +365,14 @@ do
 	end
 
 	Library.Tween = function(Self, Properties, Info, IsRawItem)
+		if not Library.Animation then
+			if not Library.Unload then
+				return
+			end
+			if typeof(Library.Unload) == "function" then
+				Library:Unload()
+			end
+		end
 		local Object = Self.Instance or IsRawItem
 		Info = Info
 			or TweenInfo.new(
@@ -2229,7 +2237,7 @@ do
 				Items["Logo"] = Library:Create("ImageLabel", {
 					Name = "\0",
 					Parent = Items["Watermark"].Instance,
-					ImageColor3 = Library.Theme["Accent"],
+					--	ImageColor3 = Library.Theme["Accent"],
 					ScaleType = Enum.ScaleType.Fit,
 					AnchorPoint = Vector2.new(0, 0.5),
 					Image = Watermark.Logo,
@@ -2237,7 +2245,7 @@ do
 					Position = UDim2.new(0, 0, 0.5, 0),
 					Size = UDim2.new(0, 40, 0, 40),
 					BorderSizePixel = 0,
-				}):AddToTheme({ ImageColor3 = "Accent" })
+				}) --:AddToTheme({ ImageColor3 = "Accent" })
 
 				Library:Create("UICorner", {
 					Name = "\0",
@@ -3492,7 +3500,7 @@ do
 					Flag = "UIBind",
 					Mode = "Toggle",
 					Parent = OtherTab.Items["Content"],
-					Default = Enum.KeyCode.RightShift,
+					Default = Enum.KeyCode.K,
 					Callback = function(Value)
 						Library.MenuKeybind = Flags["UIBind"].Key
 					end,
@@ -3565,6 +3573,7 @@ do
 					end
 
 					Window:SetOpen(not Window.IsOpen)
+					Items["OpenAndClose"].Instance.Text = Window.IsOpen and "Close" or "Open"
 				end
 			end)
 
