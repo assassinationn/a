@@ -901,11 +901,7 @@ do
 				if Success then
 					Library:Notification("Successfully loaded config", 3, Color3.fromRGB(0, 255, 0))
 				elseif Result then
-					Library:Notification(
-						"Failed to auto load config: \n" .. Result,
-						3,
-						Color3.fromRGB(255, 0, 0)
-					)
+					Library:Notification("Failed to auto load config: \n" .. Result, 3, Color3.fromRGB(255, 0, 0))
 				end
 			end
 		end)
@@ -1729,6 +1725,7 @@ do
 
 				Toggled = false,
 				Picking = false,
+				Visible = Data.Visible ~= false,
 
 				Items = {},
 			}
@@ -2002,6 +1999,7 @@ do
 					Name = Data.Name,
 					Mode = Keybind.Toggled and "On" or "Off",
 					Toggled = Keybind.Toggled,
+					Visible = Keybind.Visible,
 				})
 			end
 
@@ -2015,6 +2013,14 @@ do
 					else
 						KeybindObject:SetMode(Keybind.Toggled and "On" or "Off")
 					end
+				end
+			end
+
+			function Keybind:SetVisibility(Bool)
+				Keybind.Visible = Bool == true
+
+				if KeybindObject and KeybindObject.SetVisibility then
+					KeybindObject:SetVisibility(Keybind.Visible)
 				end
 			end
 
@@ -2471,6 +2477,8 @@ do
 			end
 
 			function Watermark:AddItem(Icon, Text)
+				local HasIcon = Icon ~= nil and Icon ~= false and Icon ~= ""
+
 				local NewItem = Library:Create("Frame", {
 					Name = "\0",
 					Parent = Items["Watermark"].Instance,
@@ -2480,16 +2488,19 @@ do
 					AutomaticSize = Enum.AutomaticSize.X,
 				})
 
-				local NewIcon = Library:Create("ImageLabel", {
-					Name = "\0",
-					Parent = NewItem.Instance,
-					AnchorPoint = Vector2.new(0, 0.5),
-					Image = Icon,
-					BackgroundTransparency = 1,
-					Position = UDim2.new(0, 0, 0.5, 0),
-					Size = UDim2.new(0, 18, 0, 18),
-					BorderSizePixel = 0,
-				})
+				local NewIcon
+				if HasIcon then
+					NewIcon = Library:Create("ImageLabel", {
+						Name = "\0",
+						Parent = NewItem.Instance,
+						AnchorPoint = Vector2.new(0, 0.5),
+						Image = Icon,
+						BackgroundTransparency = 1,
+						Position = UDim2.new(0, 0, 0.5, 0),
+						Size = UDim2.new(0, 18, 0, 18),
+						BorderSizePixel = 0,
+					})
+				end
 
 				local NewText = Library:Create("TextLabel", {
 					Name = "\0",
@@ -2501,7 +2512,7 @@ do
 					AnchorPoint = Vector2.new(0, 0.5),
 					Size = UDim2.new(0, 0, 0, 16),
 					BackgroundTransparency = 1,
-					Position = UDim2.new(0, 28, 0.5, 0),
+					Position = UDim2.new(0, HasIcon and 28 or 0, 0.5, 0),
 					BorderSizePixel = 0,
 					AutomaticSize = Enum.AutomaticSize.X,
 				}):AddToTheme({ TextColor3 = "Text" })
@@ -2621,12 +2632,15 @@ do
 			end
 
 			function KeybindList:AddBind(Flag, Name, Mode, Toggled)
+				local BindVisible = true
+
 				if type(Flag) == "table" then
 					local Data = Flag
 					Flag = Data.Flag or Data.flag or Data.Name or Data.name
 					Name = Data.Name or Data.name or Flag
 					Mode = Data.Mode or Data.mode
 					Toggled = Data.Toggled == true or Data.toggled == true
+					BindVisible = Data.Visible ~= false
 				end
 
 				local BindFlag = tostring(Flag or "")
@@ -2642,8 +2656,9 @@ do
 					Name = "\0",
 					Parent = Items["Content"].Instance,
 					BackgroundTransparency = 1,
-					Size = UDim2.new(1, 0, 0, 20),
+					Size = UDim2.new(1, 0, 0, BindVisible and 20 or 0),
 					BorderSizePixel = 0,
+					Visible = BindVisible,
 				})
 
 				local NewText = Library:Create("TextLabel", {
@@ -2709,6 +2724,12 @@ do
 					NewMode.Instance.Text = Mode
 				end
 
+				function NewKey:SetVisibility(Bool)
+					local IsVisible = Bool == true
+					NewKey.Instance.Visible = IsVisible
+					NewKey.Instance.Size = UDim2.new(1, 0, 0, IsVisible and 20 or 0)
+				end
+
 				function NewKey:Destroy()
 					if BindFlag ~= "" and KeybindList.Binds[BindFlag] == NewKey then
 						KeybindList.Binds[BindFlag] = nil
@@ -2721,6 +2742,7 @@ do
 				NewKey:Set(BindName)
 				NewKey:SetMode(BindMode)
 				NewKey:SetStatus(BindToggled)
+				NewKey:SetVisibility(BindVisible)
 
 				if BindFlag ~= "" then
 					KeybindList.Binds[BindFlag] = NewKey
@@ -4456,6 +4478,7 @@ do
 					Default = Data.Default or Data.default or Enum.KeyCode.E,
 					Callback = Data.Callback or Data.callback or function() end,
 					Mode = Data.Mode or Data.mode or "Toggle",
+					Visible = Data.Visible,
 
 					Window = Toggle.Window,
 					Page = Toggle.Page,
@@ -4472,6 +4495,7 @@ do
 					Default = Keybind.Default,
 					Mode = Keybind.Mode,
 					Callback = Keybind.Callback,
+					Visible = Keybind.Visible,
 				})
 
 				return NewKeybind
@@ -5945,6 +5969,7 @@ do
 					Default = Data.Default or Data.default or Enum.KeyCode.E,
 					Callback = Data.Callback or Data.callback or function() end,
 					Mode = Data.Mode or Data.mode or "Toggle",
+					Visible = Data.Visible,
 
 					Window = Label.Window,
 					Page = Label.Page,
@@ -5960,6 +5985,7 @@ do
 					Default = Keybind.Default,
 					Mode = Keybind.Mode,
 					Callback = Keybind.Callback,
+					Visible = Keybind.Visible,
 				})
 
 				return NewKeybind
