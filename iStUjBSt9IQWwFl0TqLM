@@ -305,6 +305,11 @@ do
 		getgenv().LibraryUnloading = false
 	end
 
+	Library.Round = function(Self, Number, Float)
+		local Multiplier = 1 / (Float or 1)
+		return math.floor(Number * Multiplier) / Multiplier
+	end
+
 	Library.Create = function(Self, Class, Properties)
 		local Data = {
 			Class = Class,
@@ -735,11 +740,6 @@ do
 		end
 
 		return Success, Result
-	end
-
-	Library.Round = function(Self, Number, Float)
-		local Multiplier = 1 / (Float or 1)
-		return math.floor(Number * Multiplier) / Multiplier
 	end
 
 	Library.GetConfig = function(Self)
