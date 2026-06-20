@@ -2717,7 +2717,9 @@ do
 				end
 
 				function NewKey:Set(Name)
-					NewText.Instance.Text = Name
+					pcall(function()
+						NewText.Instance.Text = Name
+					end)
 				end
 
 				function NewKey:SetMode(Mode)
