@@ -111,6 +111,7 @@ local Library = {
 		Loading = false,
 		SaveToken = 0,
 		SaveDelay = 0.25,
+		PendingConfig = nil,
 	},
 	ConfigAutoLoadFile = "AutoLoad.json",
 
@@ -128,6 +129,46 @@ do
 
 	local Flags = Library.Flags
 	local SetFlags = Library.SetFlags
+
+	local function ApplyConfigValue(SetFunction, Value)
+		if type(Value) == "table" and Value.Key then
+			SetFunction(Value)
+		elseif type(Value) == "table" and Value.Color then
+			SetFunction(Value.Color, Value.Alpha)
+		else
+			SetFunction(Value)
+		end
+	end
+
+	setmetatable(SetFlags, {
+		__newindex = function(Table, Index, Value)
+			rawset(Table, Index, Value)
+
+			local Pending = Library.ConfigState.PendingConfig
+			if type(Pending) ~= "table" then
+				return
+			end
+
+			local PendingValue = Pending[Index]
+			if PendingValue == nil then
+				return
+			end
+
+			Pending[Index] = nil
+			if next(Pending) == nil then
+				Library.ConfigState.PendingConfig = nil
+			end
+
+			local PreviousLoading = Library.ConfigState.Loading
+			Library.ConfigState.Loading = true
+
+			Library:SafeCall(function()
+				ApplyConfigValue(Value, PendingValue)
+			end)
+
+			Library.ConfigState.Loading = PreviousLoading
+		end,
+	})
 
 	local Keys = {
 		["Unknown"] = "Unknown",
@@ -766,26 +807,35 @@ do
 	end
 
 	Library.LoadConfig = function(Self, Config)
-		local Decoded = HttpService:JSONDecode(Config)
+		Library.ConfigState.PendingConfig = nil
+
+		local Success, Decoded = pcall(function()
+			return HttpService:JSONDecode(Config)
+		end)
+
+		if not Success then
+			return false, Decoded
+		end
+
 		Library.ConfigState.Loading = true
+		Library.ConfigState.PendingConfig = {}
 
 		local Success, Result = Library:SafeCall(function()
 			for Index, Value in Decoded do
 				local SetFunction = Library.SetFlags[Index]
 
 				if not SetFunction then
+					Library.ConfigState.PendingConfig[Index] = Value
 					continue
 				end
 
-				if type(Value) == "table" and Value.Key then
-					SetFunction(Value)
-				elseif type(Value) == "table" and Value.Color then
-					SetFunction(Value.Color, Value.Alpha)
-				else
-					SetFunction(Value)
-				end
+				ApplyConfigValue(SetFunction, Value)
 			end
 		end)
+
+		if type(Library.ConfigState.PendingConfig) == "table" and next(Library.ConfigState.PendingConfig) == nil then
+			Library.ConfigState.PendingConfig = nil
+		end
 
 		Library.ConfigState.Loading = false
 		return Success, Result
@@ -882,6 +932,16 @@ do
 		return Library:LoadConfig(readfile(Path))
 	end
 
+	Library.LoadConfiguration = function(Self, ConfigName)
+		local Name = tostring(ConfigName or Library.ConfigState.Name or "")
+
+		if ConfigName ~= nil and Name ~= "" then
+			Library.ConfigState.Name = Name
+		end
+
+		return Library:LoadConfigFile(Name)
+	end
+
 	Library.AutoLoadConfig = function(Self, ConfigName, Delay, Silent)
 		Library.ConfigState.AutoLoad = true
 		Library.ConfigState.Name = tostring(ConfigName or "")
@@ -895,7 +955,7 @@ do
 				return
 			end
 
-			local Success, Result = Library:LoadConfigFile(Library.ConfigState.Name)
+			local Success, Result = Library:LoadConfiguration(Library.ConfigState.Name)
 
 			if not Library.ConfigState.Silent then
 				if Success then
@@ -1347,7 +1407,7 @@ do
 				Items["ColorpickerButton"].Instance.Visible = Bool
 			end
 
-			function Colorpicker:Update(IsFromAlpha)
+			function Colorpicker:Update(IsFromAlpha, SkipSave)
 				local Hue, Saturation, Value = Colorpicker.Hue, Colorpicker.Saturation, Colorpicker.Value
 				Colorpicker.Color = Color3.fromHSV(Hue, Saturation, Value)
 				Colorpicker.HexValue = Colorpicker.Color:ToHex()
@@ -1370,7 +1430,9 @@ do
 					Library:SafeCall(Data.Callback, Colorpicker.Color, Colorpicker.Alpha)
 				end
 
-				Library:QueueConfigSave()
+				if not SkipSave then
+					Library:QueueConfigSave()
+				end
 			end
 
 			local Debounce = false
@@ -1559,7 +1621,7 @@ do
 				Colorpicker:Update(true)
 			end
 
-			function Colorpicker:Set(Color, Alpha)
+			function Colorpicker:Set(Color, Alpha, SkipSave)
 				if type(Color) == "table" then
 					Color = Color3.fromRGB(Color[1], Color[2], Color[3])
 				elseif type(Color) == "string" then
@@ -1590,7 +1652,7 @@ do
 					{ Position = UDim2.new(AlphaPositionX, 0, 0, 0) },
 					TweenInfo.new(Library.Animation.Time, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
 				)
-				Colorpicker:Update()
+				Colorpicker:Update(nil, SkipSave)
 			end
 
 			Items["ColorpickerButton"]:Connect("MouseButton1Down", function()
@@ -1704,11 +1766,11 @@ do
 			end)
 
 			if Data.Default then
-				Colorpicker:Set(Data.Default, Data.Alpha)
+				Colorpicker:Set(Data.Default, Data.Alpha, true)
 			end
 
 			SetFlags[Colorpicker.Flag] = function(Value, Alpha)
-				Colorpicker:Set(Value, Alpha)
+				Colorpicker:Set(Value, Alpha, true)
 			end
 
 			return Colorpicker, Items
@@ -2024,7 +2086,7 @@ do
 				end
 			end
 
-			function Keybind:SetMode(Mode)
+			function Keybind:SetMode(Mode, SkipSave)
 				Flags[Keybind.Flag] = {
 					Mode = Keybind.Mode,
 					Key = Keybind.Key,
@@ -2050,7 +2112,9 @@ do
 				end
 
 				Update()
-				Library:QueueConfigSave()
+				if not SkipSave then
+					Library:QueueConfigSave()
+				end
 			end
 
 			function Keybind:Press(Bool)
@@ -2080,7 +2144,7 @@ do
 				Library:QueueConfigSave()
 			end
 
-			function Keybind:Set(Key)
+			function Keybind:Set(Key, SkipSave)
 				if string.find(tostring(Key), "Enum") then
 					Keybind.Key = tostring(Key)
 
@@ -2108,10 +2172,10 @@ do
 
 					if Key.Mode then
 						Keybind.Mode = Key.Mode
-						Keybind:SetMode(Key.Mode)
+						Keybind:SetMode(Key.Mode, SkipSave)
 					else
 						Keybind.Mode = "Toggle"
-						Keybind:SetMode("Toggle")
+						Keybind:SetMode("Toggle", SkipSave)
 					end
 
 					local KeyString = Keys[Keybind.Key] or string.gsub(tostring(RealKey), "Enum.", "") or RealKey
@@ -2129,7 +2193,7 @@ do
 					end
 				elseif table.find({ "Toggle", "Hold", "Always" }, Key) then
 					Keybind.Mode = Key
-					Keybind:SetMode(Key)
+					Keybind:SetMode(Key, SkipSave)
 
 					if Data.Callback then
 						Library:SafeCall(Data.Callback, Keybind.Toggled)
@@ -2138,7 +2202,9 @@ do
 
 				Keybind.Picking = false
 				Update()
-				Library:QueueConfigSave()
+				if not SkipSave then
+					Library:QueueConfigSave()
+				end
 			end
 
 			Items["KeyButton"]:Connect("MouseButton1Click", function()
@@ -2233,11 +2299,11 @@ do
 				Keybind:Set({
 					Mode = Data.Mode or "Toggle",
 					Key = Data.Default,
-				})
+				}, true)
 			end
 
 			SetFlags[Keybind.Flag] = function(Value)
-				Keybind:Set(Value)
+				Keybind:Set(Value, true)
 			end
 
 			return Keybind, Items
@@ -2922,6 +2988,9 @@ do
 
 				if SavedAutoLoadEnabled and SavedAutoLoadName ~= "" then
 					AutoLoadConfig = SavedAutoLoadName
+					AutoLoadSilent = true
+				elseif PersistentConfigName ~= "" then
+					AutoLoadConfig = PersistentConfigName
 					AutoLoadSilent = true
 				end
 			end
@@ -4390,7 +4459,7 @@ do
 				Items["Indicator"]:Tween({ BackgroundColor3 = Library.Theme["Element"] })
 			end)
 
-			function Toggle:Set(Bool)
+			function Toggle:Set(Bool, SkipSave)
 				Toggle.Value = Bool
 
 				if Bool then
@@ -4433,7 +4502,11 @@ do
 
 				Flags[Toggle.Flag] = Bool
 				Library:SafeCall(Toggle.Callback, Bool)
-				Library:QueueConfigSave()
+
+				local State = Library.ConfigState
+				if not SkipSave and not State.Loading and State.AutoSave and State.AutoSaveReady and tostring(State.Name or "") ~= "" then
+					Library:SaveConfigFile(State.Name)
+				end
 			end
 
 			function Toggle:SetVisibility(Bool)
@@ -4680,10 +4753,10 @@ do
 				Toggle:Set(not Toggle.Value)
 			end)
 
-			Toggle:Set(Toggle.Default)
+			Toggle:Set(Toggle.Default, true)
 
 			SetFlags[Toggle.Flag] = function(Value)
-				Toggle:Set(Value)
+				Toggle:Set(Value, true)
 			end
 
 			return setmetatable(Toggle, Library)
@@ -4958,7 +5031,7 @@ do
 				Items["RealSlider"]:Tween({ BackgroundColor3 = Library.Theme["Element"] })
 			end)
 
-			function Slider:Set(Value)
+			function Slider:Set(Value, SkipSave)
 				Slider.Value = Library:Round(math.clamp(Value, Slider.Min, Slider.Max), Slider.Decimals)
 
 				Items["Accent"]:Tween(
@@ -4969,7 +5042,9 @@ do
 
 				Flags[Slider.Flag] = Slider.Value
 				Library:SafeCall(Slider.Callback, Slider.Value)
-				Library:QueueConfigSave()
+				if not SkipSave then
+					Library:QueueConfigSave()
+				end
 			end
 
 			function Slider:SetVisibility(Bool)
@@ -5063,10 +5138,10 @@ do
 				})
 			end
 
-			Slider:Set(Slider.Default)
+			Slider:Set(Slider.Default, true)
 
 			SetFlags[Slider.Flag] = function(Value)
-				Slider:Set(Value)
+				Slider:Set(Value, true)
 			end
 
 			return setmetatable(Slider, Library)
@@ -5247,7 +5322,7 @@ do
 				Items["RealSlider"]:Tween({ BackgroundColor3 = Library.Theme["Element"] })
 			end)
 
-			function Slider:Set(MinValue, MaxValue)
+			function Slider:Set(MinValue, MaxValue, SkipSave)
 				if typeof(MinValue) == "table" then
 					MinValue, MaxValue = MinValue[1], MinValue[2]
 				end
@@ -5280,6 +5355,10 @@ do
 
 				if Slider.Callback then
 					Library:SafeCall(Slider.Callback, Slider.Value)
+				end
+
+				if not SkipSave then
+					Library:QueueConfigSave()
 				end
 			end
 
@@ -5356,10 +5435,10 @@ do
 				end
 			end)
 
-			Slider:Set(Slider.Default[1], Slider.Default[2])
+			Slider:Set(Slider.Default[1], Slider.Default[2], true)
 
 			SetFlags[Slider.Flag] = function(Value)
-				Slider:Set(Value)
+				Slider:Set(Value, true)
 			end
 
 			return setmetatable(Slider, Library)
@@ -5531,7 +5610,7 @@ do
 
 			Dropdown.Holder = Items["OptionHolder"]
 
-			function Dropdown:Set(Value)
+			function Dropdown:Set(Value, SkipSave)
 				if Dropdown.Multi then
 					if type(Value) ~= "table" then
 						return
@@ -5576,7 +5655,9 @@ do
 				end
 
 				Library:SafeCall(Dropdown.Callback, Dropdown.Value)
-				Library:QueueConfigSave()
+				if not SkipSave then
+					Library:QueueConfigSave()
+				end
 			end
 
 			function Dropdown:Add(Value)
@@ -5832,10 +5913,10 @@ do
 				Dropdown:Add(Value)
 			end
 
-			Dropdown:Set(Dropdown.Default)
+			Dropdown:Set(Dropdown.Default, true)
 
 			SetFlags[Dropdown.Flag] = function(Value)
-				Dropdown:Set(Value)
+				Dropdown:Set(Value, true)
 			end
 
 			return setmetatable(Dropdown, Library)
@@ -6108,7 +6189,7 @@ do
 				Items["Text"].Instance.Text = tostring(Text)
 			end
 
-			function Textbox:Set(Value)
+			function Textbox:Set(Value, SkipSave)
 				if Textbox.Numeric then
 					if (not tonumber(Value)) and string.len(tostring(Value)) > 0 then
 						Value = Textbox.Value
@@ -6120,7 +6201,9 @@ do
 				Flags[Textbox.Flag] = Value
 
 				Library:SafeCall(Textbox.Callback, Value)
-				Library:QueueConfigSave()
+				if not SkipSave then
+					Library:QueueConfigSave()
+				end
 			end
 
 			if Textbox.Finished then
@@ -6143,10 +6226,10 @@ do
 				})
 			end
 
-			Textbox:Set(Textbox.Default)
+			Textbox:Set(Textbox.Default, true)
 
 			SetFlags[Textbox.Flag] = function(Value)
-				Textbox:Set(Value)
+				Textbox:Set(Value, true)
 			end
 
 			return setmetatable(Textbox, Library)
