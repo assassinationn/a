@@ -414,6 +414,48 @@ local function fadeOutTree(root, speed)
 	end
 end
 
+-- Snap every fade-able property under root to fully opaque (cancels mid-fade corruption).
+local function forceOpaqueTree(root)
+	local function apply(inst)
+		if not inst or not inst.Parent then
+			return
+		end
+		if inst:IsA("GuiObject") and inst ~= root then
+			local bg = inst.BackgroundTransparency
+			-- Keep intentional soft lines (dividers/strokes); only restore fully-faded chrome.
+			if bg > 0.99 then
+				setNow(inst, "BackgroundTransparency", 1)
+			elseif bg > 0.05 then
+				-- Soft divider / translucent surface — leave as-is (or clamp to design soft).
+				if inst.Name == "Divider" or inst.Name == "TopDivider" then
+					setNow(inst, "BackgroundTransparency", math.max(bg, 0.92))
+				end
+			else
+				setNow(inst, "BackgroundTransparency", 0)
+			end
+		end
+		if inst:IsA("TextLabel") or inst:IsA("TextButton") or inst:IsA("TextBox") then
+			setNow(inst, "TextTransparency", 0)
+		end
+		if inst:IsA("ImageLabel") or inst:IsA("ImageButton") then
+			setNow(inst, "ImageTransparency", 0)
+		end
+		if inst:IsA("UIStroke") then
+			setNow(inst, "Transparency", STROKE_SOFT)
+		end
+		if inst.ClassName == "UIShadow" then
+			setNow(inst, "Transparency", 0.28)
+		end
+	end
+	if root:IsA("GuiObject") then
+		setNow(root, "BackgroundTransparency", 0.06)
+	end
+	apply(root)
+	for _, inst in ipairs(root:GetDescendants()) do
+		apply(inst)
+	end
+end
+
 connect(RunService.Heartbeat, function(dt)
 	for instance, props in pairs(Motion) do
 		if typeof(instance) ~= "Instance" or not instance.Parent then
@@ -1202,11 +1244,25 @@ end
 local function linkKeybindToList(keyControl, options, fallbackName)
 	options = options or {}
 	local list = Vertex.KeyList
+	if (not list or type(list.Register) ~= "function") and type(getgenv) == "function" then
+		local env = getgenv()
+		if type(env) == "table" then
+			if type(env.Vertex) == "table" and type(env.Vertex.KeyList) == "table" then
+				list = env.Vertex.KeyList
+			elseif type(env.Library) == "table" and type(env.Library.KeyList) == "table" then
+				list = env.Library.KeyList
+			end
+		end
+	end
 	if not list or type(list.Register) ~= "function" then
 		return
 	end
 
 	local name = options.ListName or options.Name or fallbackName or keyControl.Flag or "Keybind"
+	local startVisible = options.ListVisible
+	if startVisible == nil then
+		startVisible = true
+	end
 	keyControl._listEntry = list:Register({
 		Flag = keyControl.Flag,
 		Name = name,
@@ -1214,7 +1270,7 @@ local function linkKeybindToList(keyControl, options, fallbackName)
 		Mode = keyControl.Mode,
 		Key = keyControl.Value and keyControl.Value.Name or "Unknown",
 		Active = keyControl.Active == true,
-		Visible = true,
+		Visible = startVisible == true,
 		Control = keyControl,
 	})
 
@@ -2192,31 +2248,13 @@ function Vertex:CreateWindow(options)
 		}, tabList)
 		addCorner(tabButton, RADIUS.Control)
 
-		local indicator = create("Frame", {
-			Name = "Indicator",
-			AnchorPoint = Vector2.new(0, 0.5),
-			Position = UDim2.new(0, 8, 0.5, 0),
-			Size = UDim2.fromOffset(3, 16),
-			BackgroundColor3 = Vertex.Theme.Accent,
-			BackgroundTransparency = 1,
-			BorderSizePixel = 0,
-			ZIndex = 4,
-		}, tabButton)
-		addCorner(indicator, RADIUS.Pill)
-		watchTheme(function()
-			if not indicator.Parent then
-				return false
-			end
-			motion(indicator, "BackgroundColor3", Vertex.Theme.Accent, 18)
-		end)
-
-		local textOffset = 20
+		local textOffset = 14
 		local tabIcon
 		if tabOptions.Icon and getIcon(tabOptions.Icon) then
 			tabIcon = makeGlyph(tabButton, tabOptions.Icon, nil, 17, Vertex.Theme.TextMuted)
 			tabIcon.AnchorPoint = Vector2.new(0, 0.5)
-			tabIcon.Position = UDim2.new(0, 20, 0.5, 0)
-			textOffset = 46
+			tabIcon.Position = UDim2.new(0, 14, 0.5, 0)
+			textOffset = 40
 		end
 
 		local tabLabel = create(
@@ -2260,7 +2298,6 @@ function Vertex:CreateWindow(options)
 			Button = tabButton,
 			Label = tabLabel,
 			Icon = tabIcon,
-			Indicator = indicator,
 			Page = page,
 			Sections = {},
 			Window = window,
@@ -2283,7 +2320,6 @@ function Vertex:CreateWindow(options)
 				end
 				motion(other.Button, "BackgroundTransparency", selected and 0 or 1, 18)
 				motion(other.Label, "TextColor3", selected and Vertex.Theme.Text or Vertex.Theme.TextMuted, 18)
-				motion(other.Indicator, "BackgroundTransparency", selected and 0 or 1, 18)
 				other.Label.FontFace = selected and Vertex.Fonts.Bold or Vertex.Fonts.SemiBold
 				if other.Icon then
 					paintGlyph(other.Icon, selected and Vertex.Theme.Text or Vertex.Theme.TextMuted)
@@ -3875,24 +3911,35 @@ function Vertex:KeybindList(params)
 
 	local listWidth = tonumber(params.Width) or 210
 
-	local frame = create("Frame", {
+	-- CanvasGroup fades the whole panel via GroupTransparency so per-child
+	-- alpha never gets stuck after hide/show (Hide Keybind List, etc.).
+	local shell = create("CanvasGroup", {
 		Name = "VertexKeybindList",
-		BackgroundColor3 = self.Theme.Surface,
-		BackgroundTransparency = 0.06,
+		BackgroundTransparency = 1,
 		BorderSizePixel = 0,
-		-- Fixed width + auto height. Scale-1 children + AutomaticSize.X blows out to the viewport.
 		Size = UDim2.fromOffset(listWidth, 0),
 		AutomaticSize = Enum.AutomaticSize.Y,
 		AnchorPoint = params.AnchorPoint or Vector2.new(0, 0.5),
 		Position = params.Position or UDim2.new(0, 18, 0.5, 0),
+		GroupTransparency = 1,
 		Active = true,
 		Visible = false,
 		ZIndex = 80,
 	}, host)
+
+	local frame = create("Frame", {
+		Name = "Panel",
+		BackgroundColor3 = self.Theme.Surface,
+		BackgroundTransparency = 0.06,
+		BorderSizePixel = 0,
+		Size = UDim2.new(1, 0, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		ZIndex = 80,
+	}, shell)
 	addCorner(frame, RADIUS.Control)
 	addDropShadow(frame, { Blur = 36, YOffset = 8, Spread = 10, Transparency = 0.28 })
 	addPadding(frame, 12, 14, 12, 14)
-	makeDraggable(frame, frame)
+	makeDraggable(shell, shell)
 
 	create("UIListLayout", {
 		FillDirection = Enum.FillDirection.Vertical,
@@ -3916,7 +3963,7 @@ function Vertex:KeybindList(params)
 	local divider = create("Frame", {
 		Name = "Divider",
 		BackgroundColor3 = STROKE_COLOR,
-		BackgroundTransparency = STROKE_SOFT,
+		BackgroundTransparency = 0.92,
 		BorderSizePixel = 0,
 		Size = UDim2.new(1, 0, 0, 1),
 		LayoutOrder = 2,
@@ -3939,70 +3986,65 @@ function Vertex:KeybindList(params)
 	}, content)
 
 	local list = {
-		Instance = frame,
+		Instance = shell,
+		Panel = frame,
 		Title = title,
 		Content = content,
 		Binds = {},
 		Disabled = false,
 		_userHidden = false,
-		_toggleableVisible = 0,
+		_toggleableVisible = 0, -- kept for compatibility
+		_visibleCount = 0,
 		_shown = false,
 		_visGen = 0,
-		_restAlpha = nil,
 		Window = params.Window,
 	}
 
-	local uiScale = create("UIScale", { Scale = 1 }, frame)
+	local uiScale = create("UIScale", { Scale = 1 }, shell)
 
 	local function shouldShow()
-		return not list.Disabled and not list._userHidden and list._toggleableVisible > 0
+		-- Any visible bind (toggleable On/Off or press key) keeps the panel up.
+		return not list.Disabled and not list._userHidden and (list._visibleCount or 0) > 0
 	end
 
 	local function setVisibleAnimated(want)
 		want = want == true
-		local alreadyMatching = (want and list._shown and frame.Visible) or (not want and not list._shown and not frame.Visible)
-		if alreadyMatching then
-			return
-		end
-
 		list._visGen += 1
 		local gen = list._visGen
 
 		if want then
 			list._shown = true
-			frame.Visible = true
-			-- Recapture so newly added rows fade with the panel.
-			list._restAlpha = snapshotAlpha(frame)
-			setAlpha(list._restAlpha, false)
+			shell.Visible = true
+			-- Always re-run the fade-in so a previous hide can't leave GroupTransparency at 1.
+			setNow(shell, "GroupTransparency", 1)
 			setNow(uiScale, "Scale", 0.96)
-			fadeAlpha(list._restAlpha, true, 14)
+			motion(shell, "GroupTransparency", 0, 14)
 			motion(uiScale, "Scale", 1, 14)
-			task.delay(0.32, function()
-				if gen ~= list._visGen or not frame.Parent then
+			task.delay(0.35, function()
+				if gen ~= list._visGen or not shell.Parent then
 					return
 				end
-				list._restAlpha = snapshotAlpha(frame)
+				setNow(shell, "GroupTransparency", 0)
+				setNow(uiScale, "Scale", 1)
 			end)
 		else
 			list._shown = false
-			if not frame.Visible then
+			if not shell.Visible then
+				setNow(shell, "GroupTransparency", 1)
 				return
 			end
-			list._restAlpha = snapshotAlpha(frame)
-			fadeOutTree(frame, 18)
+			motion(shell, "GroupTransparency", 1, 18)
 			motion(uiScale, "Scale", 0.96, 18)
 			task.delay(0.28, function()
-				if gen ~= list._visGen or not frame.Parent then
+				if gen ~= list._visGen or not shell.Parent then
 					return
 				end
 				if shouldShow() then
 					return
 				end
-				frame.Visible = false
+				shell.Visible = false
+				setNow(shell, "GroupTransparency", 1)
 				setNow(uiScale, "Scale", 1)
-				if list._restAlpha then
-					setAlpha(list._restAlpha, true)
-				end
 			end)
 		end
 	end
@@ -4034,16 +4076,18 @@ function Vertex:KeybindList(params)
 		self._visGen += 1
 		local gen = self._visGen
 		self._shown = false
-		if not frame.Visible then
+		if not shell.Visible then
 			return
 		end
-		fadeOutTree(frame, speed or 18)
+		motion(shell, "GroupTransparency", 1, speed or 18)
 		motion(uiScale, "Scale", 0.96, speed or 18)
 		task.delay(0.28, function()
-			if gen ~= self._visGen or not frame.Parent then
+			if gen ~= self._visGen or not shell.Parent then
 				return
 			end
-			frame.Visible = false
+			shell.Visible = false
+			setNow(shell, "GroupTransparency", 1)
+			setNow(uiScale, "Scale", 1)
 		end)
 	end
 
@@ -4192,19 +4236,26 @@ function Vertex:KeybindList(params)
 			row.Visible = visible
 			row.Size = UDim2.new(1, 0, 0, visible and 18 or 0)
 
-			if self.Toggleable then
-				if visible and not wasVisible then
+			if visible and not wasVisible then
+				list._visibleCount += 1
+				if self.Toggleable then
 					list._toggleableVisible += 1
-				elseif not visible and wasVisible then
+				end
+			elseif not visible and wasVisible then
+				list._visibleCount = math.max(0, list._visibleCount - 1)
+				if self.Toggleable then
 					list._toggleableVisible = math.max(0, list._toggleableVisible - 1)
 				end
-				refreshVisibility()
 			end
+			refreshVisibility()
 		end
 
 		function entry:Destroy()
-			if self.Toggleable and self._visible then
-				list._toggleableVisible = math.max(0, list._toggleableVisible - 1)
+			if self._visible then
+				list._visibleCount = math.max(0, list._visibleCount - 1)
+				if self.Toggleable then
+					list._toggleableVisible = math.max(0, list._toggleableVisible - 1)
+				end
 			end
 			if list.Binds[bindFlag] == entry then
 				list.Binds[bindFlag] = nil
@@ -4215,8 +4266,11 @@ function Vertex:KeybindList(params)
 			refreshVisibility()
 		end
 
-		if toggleable and bindVisible then
-			self._toggleableVisible += 1
+		if bindVisible then
+			self._visibleCount += 1
+			if toggleable then
+				self._toggleableVisible += 1
+			end
 		end
 
 		self.Binds[bindFlag] = entry
@@ -4263,8 +4317,8 @@ function Vertex:KeybindList(params)
 				end
 				self.Binds[flag] = nil
 			end
-			if frame.Parent then
-				frame:Destroy()
+			if shell.Parent then
+				shell:Destroy()
 			end
 			for index, item in ipairs(Vertex.KeybindLists) do
 				if item == self then
@@ -4277,8 +4331,8 @@ function Vertex:KeybindList(params)
 			end
 		end
 
-		if frame.Visible and frame.Parent then
-			fadeOutTree(frame, 18)
+		if shell.Visible and shell.Parent then
+			motion(shell, "GroupTransparency", 1, 18)
 			motion(uiScale, "Scale", 0.96, 18)
 			task.delay(0.28, function()
 				if gen ~= self._visGen then
