@@ -662,12 +662,16 @@ local function makeDraggable(handle, target)
 			local delta = input.Position - dragStart
 			-- setNow keeps clearing the Position motion entry each frame so the
 			-- smoothing loop can't override the drag.
-			setNow(target, "Position", UDim2.new(
-				startPosition.X.Scale,
-				startPosition.X.Offset + delta.X,
-				startPosition.Y.Scale,
-				startPosition.Y.Offset + delta.Y
-			))
+			setNow(
+				target,
+				"Position",
+				UDim2.new(
+					startPosition.X.Scale,
+					startPosition.X.Offset + delta.X,
+					startPosition.Y.Scale,
+					startPosition.Y.Offset + delta.Y
+				)
+			)
 		end
 	end)
 end
@@ -2162,7 +2166,10 @@ function Vertex:CreateWindow(options)
 
 		connect(cancelBtn.MouseButton1Click, dismiss)
 		connect(overlay.InputBegan, function(input)
-			if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			if
+				input.UserInputType == Enum.UserInputType.MouseButton1
+				or input.UserInputType == Enum.UserInputType.Touch
+			then
 				-- Only dismiss when clicking the dim area, not the card.
 				local pos = input.Position
 				local cPos, cSize = card.AbsolutePosition, card.AbsoluteSize
@@ -2668,14 +2675,26 @@ function Vertex:CreateWindow(options)
 					end
 				end
 				local function sampleSatVal(input)
-					local relX = math.clamp((input.Position.X - satVal.AbsolutePosition.X) / math.max(satVal.AbsoluteSize.X, 1), 0, 1)
-					local relY = math.clamp((input.Position.Y - satVal.AbsolutePosition.Y) / math.max(satVal.AbsoluteSize.Y, 1), 0, 1)
+					local relX = math.clamp(
+						(input.Position.X - satVal.AbsolutePosition.X) / math.max(satVal.AbsoluteSize.X, 1),
+						0,
+						1
+					)
+					local relY = math.clamp(
+						(input.Position.Y - satVal.AbsolutePosition.Y) / math.max(satVal.AbsoluteSize.Y, 1),
+						0,
+						1
+					)
 					sat, val = relX, 1 - relY
 					color = Color3.fromHSV(hue, sat, val)
 					pushValue(false, false)
 				end
 				local function sampleHue(input)
-					hue = math.clamp((input.Position.X - hueBar.AbsolutePosition.X) / math.max(hueBar.AbsoluteSize.X, 1), 0, 1)
+					hue = math.clamp(
+						(input.Position.X - hueBar.AbsolutePosition.X) / math.max(hueBar.AbsoluteSize.X, 1),
+						0,
+						1
+					)
 					color = Color3.fromHSV(hue, sat, val)
 					pushValue(false, false)
 				end
@@ -2688,7 +2707,10 @@ function Vertex:CreateWindow(options)
 					end
 				end)
 				connect(satVal.InputChanged, function(input)
-					if input.UserInputType == Enum.UserInputType.MouseMovement and input.UserInputState == Enum.UserInputState.Change then
+					if
+						input.UserInputType == Enum.UserInputType.MouseMovement
+						and input.UserInputState == Enum.UserInputState.Change
+					then
 						if UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then
 							sampleSatVal(input)
 						end
@@ -2832,11 +2854,7 @@ function Vertex:CreateWindow(options)
 					end
 				end
 				wireKeybindRuntime(keyControl, data)
-				linkKeybindToList(
-					keyControl,
-					data,
-					(control.Label and control.Label.Text) or data.Name or flag
-				)
+				linkKeybindToList(keyControl, data, (control.Label and control.Label.Text) or data.Name or flag)
 
 				connect(bindButton.MouseButton1Click, function()
 					keyControl._listening = true
@@ -3001,8 +3019,7 @@ function Vertex:CreateWindow(options)
 				local minimum = tonumber(sliderOptions.Min) or 0
 				local maximum = tonumber(sliderOptions.Max) or 100
 				local decimals = tonumber(sliderOptions.Decimals)
-				local step = tonumber(sliderOptions.Step)
-					or (decimals and (10 ^ -decimals) or 1)
+				local step = tonumber(sliderOptions.Step) or (decimals and (10 ^ -decimals) or 1)
 				local flag = sliderOptions.Flag or sliderOptions.Name or HttpService:GenerateGUID(false)
 				local value = math.clamp(tonumber(sliderOptions.Default) or minimum, minimum, maximum)
 				Vertex.Flags[flag] = value
@@ -3239,7 +3256,8 @@ function Vertex:CreateWindow(options)
 				beginDrag(highHandle, "high")
 				connect(track.InputBegan, function(input)
 					if input.UserInputType == Enum.UserInputType.MouseButton1 then
-						local percent = (input.Position.X - track.AbsolutePosition.X) / math.max(track.AbsoluteSize.X, 1)
+						local percent = (input.Position.X - track.AbsolutePosition.X)
+							/ math.max(track.AbsoluteSize.X, 1)
 						local value = minimum + ((maximum - minimum) * percent)
 						dragging = math.abs(value - low) <= math.abs(value - high) and "low" or "high"
 						update(input)
@@ -3291,7 +3309,10 @@ function Vertex:CreateWindow(options)
 				local fieldStroke = addStroke(field, FIELD_STROKE, nil, FIELD_STROKE_THICKNESS)
 				addPadding(field, 0, 12, 0, 12)
 
-				local control = attachControlApi({ Instance = row, Input = field, Label = label, Flag = flag, Value = value }, label)
+				local control = attachControlApi(
+					{ Instance = row, Input = field, Label = label, Flag = flag, Value = value },
+					label
+				)
 				function control:Set(newValue, silent)
 					self.Value = tostring(newValue or "")
 					field.Text = self.Value
@@ -3345,13 +3366,16 @@ function Vertex:CreateWindow(options)
 						if #selected == 0 then
 							return dropdownOptions.Placeholder or "Select..."
 						end
-						return table.concat((function()
-							local names = {}
-							for _, item in ipairs(selected) do
-								names[#names + 1] = tostring(item)
-							end
-							return names
-						end)(), ", ")
+						return table.concat(
+							(function()
+								local names = {}
+								for _, item in ipairs(selected) do
+									names[#names + 1] = tostring(item)
+								end
+								return names
+							end)(),
+							", "
+						)
 					end
 					return selected ~= nil and tostring(selected) or (dropdownOptions.Placeholder or "Select...")
 				end
@@ -3425,7 +3449,8 @@ function Vertex:CreateWindow(options)
 					end
 					Vertex.Flags[flag] = self.Value
 					selector.Text = displayText()
-					selector.TextColor3 = (multi and #selected > 0 or not multi and selected ~= nil) and Vertex.Theme.Text
+					selector.TextColor3 = (multi and #selected > 0 or not multi and selected ~= nil)
+							and Vertex.Theme.Text
 						or Vertex.Theme.TextDim
 					if not silent then
 						safeCall(dropdownOptions.Callback, self.Value)
