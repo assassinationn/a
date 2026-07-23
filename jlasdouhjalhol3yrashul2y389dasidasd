@@ -3691,6 +3691,21 @@ function Vertex:CreateWindow(options)
 				return control
 			end
 
+			function section:SetVisibility(visible)
+				visible = visible == true
+				self.Visible = visible
+				if self.Instance then
+					self.Instance.Visible = visible
+				end
+			end
+
+			-- Optional initial visibility (default true).
+			if sectionOptions.Visible == false then
+				section:SetVisibility(false)
+			else
+				section.Visible = true
+			end
+
 			-- Nexonix-style short aliases.
 			section.Label = section.AddLabel
 			section.Button = section.AddButton
