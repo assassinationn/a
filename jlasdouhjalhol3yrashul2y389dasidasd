@@ -179,13 +179,13 @@ end
 -- parented as a sibling (never inside AutomaticSize — that balloons the layout).
 local function addDropShadow(target, opts)
 	opts = opts or {}
-	local transparency = opts.Transparency or 0.32
-	local yOffset = opts.YOffset or 10
-	local blur = opts.Blur or 36
-	local spread = opts.Spread or opts.Pad or 12
-	if typeof(spread) == "number" and spread > 20 then
+	local transparency = opts.Transparency or 0.18
+	local yOffset = opts.YOffset or 14
+	local blur = opts.Blur or 56
+	local spread = opts.Spread or opts.Pad or 18
+	if typeof(spread) == "number" and spread > 24 then
 		-- Old Pad values were image bleed in px; map down for UIShadow spread.
-		spread = math.floor(spread * 0.2)
+		spread = math.floor(spread * 0.22)
 	end
 
 	local ok, shadow = pcall(function()
@@ -757,8 +757,18 @@ local function attachControlApi(control, labelInstance)
 end
 
 local function registerFlag(flag, setter)
-	if flag then
-		Vertex.SetFlags[flag] = setter
+	if not flag then
+		return
+	end
+	Vertex.SetFlags[flag] = setter
+	-- If config loaded before this control existed, apply the pending value now.
+	local pending = Vertex.ConfigState and Vertex.ConfigState.PendingConfig
+	if type(pending) == "table" and pending[flag] ~= nil then
+		local value = pending[flag]
+		pending[flag] = nil
+		task.defer(function()
+			safeCall(setter, value)
+		end)
 	end
 end
 
@@ -968,12 +978,12 @@ local function attachKeybindModeSettings(parent, keyControl, rightOffset)
 	}, screenGuiOf(parent))
 	addCorner(popover, RADIUS.Control)
 	local popShadow = addDropShadow(popover, {
-		Blur = 40,
-		YOffset = 10,
-		Spread = 12,
-		Transparency = 0.28,
+		Blur = 52,
+		YOffset = 12,
+		Spread = 16,
+		Transparency = 0.16,
 	})
-	local popShadowRest = 0.28
+	local popShadowRest = 0.16
 	addPadding(popover, 6, 6, 6, 6)
 	local popScale = create("UIScale", { Scale = 0.92 }, popover)
 	create("UIListLayout", {
@@ -1409,7 +1419,7 @@ function Vertex:CreateWindow(options)
 	addCorner(main, RADIUS.Window)
 
 	-- Soft drop shadow under the window chrome.
-	addDropShadow(main, { Blur = 48, YOffset = 14, Spread = 16, Transparency = 0.28 })
+	addDropShadow(main, { Blur = 64, YOffset = 18, Spread = 22, Transparency = 0.14 })
 
 	local uiScale = create("UIScale", { Scale = 1 }, main)
 
@@ -1631,12 +1641,12 @@ function Vertex:CreateWindow(options)
 	}, reopenGui)
 	addCorner(reopenChip, RADIUS.Pill)
 	local reopenShadow = addDropShadow(reopenChip, {
-		Blur = 36,
-		YOffset = 8,
-		Spread = 10,
-		Transparency = 0.28,
+		Blur = 48,
+		YOffset = 10,
+		Spread = 14,
+		Transparency = 0.16,
 	})
-	local reopenShadowRest = 0.28
+	local reopenShadowRest = 0.16
 	local reopenScale = create("UIScale", { Scale = 0.92 }, reopenChip)
 	addPadding(reopenChip, 8, 14, 8, 12)
 	create("UIListLayout", {
@@ -2052,12 +2062,12 @@ function Vertex:CreateWindow(options)
 		}, overlay)
 		addCorner(card, RADIUS.Card)
 		local cardShadow = addDropShadow(card, {
-			Blur = 40,
-			YOffset = 10,
-			Spread = 12,
-			Transparency = 0.28,
+			Blur = 56,
+			YOffset = 14,
+			Spread = 18,
+			Transparency = 0.14,
 		})
-		local cardShadowRest = 0.28
+		local cardShadowRest = 0.14
 		local cardScale = create("UIScale", { Scale = 0.94 }, card)
 		addPadding(card, 18, 18, 18, 18)
 
@@ -2456,12 +2466,12 @@ function Vertex:CreateWindow(options)
 				}, screenGuiOf(control.Instance))
 				addCorner(picker, RADIUS.Card)
 				local pickerShadow = addDropShadow(picker, {
-					Blur = 40,
-					YOffset = 10,
-					Spread = 12,
-					Transparency = 0.28,
+					Blur = 52,
+					YOffset = 12,
+					Spread = 16,
+					Transparency = 0.16,
 				})
-				local pickerShadowRest = 0.28
+				local pickerShadowRest = 0.16
 				addPadding(picker, 10, 10, 10, 10)
 				local pickerScale = create("UIScale", { Scale = 0.94 }, picker)
 				create("UIListLayout", {
@@ -2765,7 +2775,7 @@ function Vertex:CreateWindow(options)
 					end
 				end)
 				registerFlag(flag, function(v)
-					colorControl:Set(v, nil, true)
+					colorControl:Set(v, nil, false)
 				end)
 				pushValue(true, false)
 				return colorControl
@@ -2869,7 +2879,7 @@ function Vertex:CreateWindow(options)
 					end
 				end)
 				registerFlag(flag, function(v)
-					keyControl:Set(v, true)
+					keyControl:Set(v, false)
 				end)
 				keyControl:Set(value, true)
 				return keyControl
@@ -3008,7 +3018,7 @@ function Vertex:CreateWindow(options)
 					control:Set(not control.Value)
 				end)
 				registerFlag(flag, function(v)
-					control:Set(v, true)
+					control:Set(v, false)
 				end)
 				table.insert(self.Items, control)
 				return control
@@ -3119,7 +3129,7 @@ function Vertex:CreateWindow(options)
 					end
 				end)
 				registerFlag(flag, function(v)
-					control:Set(v, true)
+					control:Set(v, false)
 				end)
 				table.insert(self.Items, control)
 				return control
@@ -3274,7 +3284,7 @@ function Vertex:CreateWindow(options)
 					end
 				end)
 				registerFlag(flag, function(v)
-					control:Set(v, nil, true)
+					control:Set(v, nil, false)
 				end)
 				table.insert(self.Items, control)
 				return control
@@ -3338,7 +3348,7 @@ function Vertex:CreateWindow(options)
 					end
 				end)
 				registerFlag(flag, function(v)
-					control:Set(v, true)
+					control:Set(v, false)
 				end)
 				table.insert(self.Items, control)
 				return control
@@ -3557,7 +3567,7 @@ function Vertex:CreateWindow(options)
 				end)
 				table.insert(window.OpenDropdowns, control)
 				registerFlag(flag, function(v)
-					control:Set(v, true)
+					control:Set(v, false)
 					control:Refresh(control.Items)
 				end)
 				control:Refresh(items)
@@ -3660,7 +3670,7 @@ function Vertex:CreateWindow(options)
 					end
 				end)
 				registerFlag(flag, function(v)
-					control:Set(v, true)
+					control:Set(v, false)
 				end)
 				table.insert(self.Items, control)
 				return control
@@ -3778,12 +3788,12 @@ function Vertex:Notify(options)
 	}, holder)
 	addCorner(notification, RADIUS.Card)
 	local notifShadow = addDropShadow(notification, {
-		Blur = 36,
-		YOffset = 8,
-		Spread = 10,
-		Transparency = 0.28,
+		Blur = 48,
+		YOffset = 10,
+		Spread = 14,
+		Transparency = 0.16,
 	})
-	local notifShadowRest = 0.28
+	local notifShadowRest = 0.16
 	local notifScale = create("UIScale", { Scale = 0.86 }, notification)
 
 	local function setNotifShadowAlpha(alpha, animate, speed)
@@ -3956,20 +3966,20 @@ function Vertex:KeybindList(params)
 	addCorner(frame, RADIUS.Control)
 	-- UIShadow only (no ImageLabel fallback sibling — that square peeks past UICorner).
 	do
-		local ok, shadow = pcall(function()
+		local ok = pcall(function()
 			local s = Instance.new("UIShadow")
 			s.Name = "DropShadow"
 			s.Color = Color3.fromRGB(0, 0, 0)
-			s.Transparency = 0.28
-			s.BlurRadius = UDim.new(0, 36)
-			s.Offset = UDim2.fromOffset(0, 8)
-			s.Spread = UDim2.fromOffset(10, 10)
+			s.Transparency = 0.14
+			s.BlurRadius = UDim.new(0, 52)
+			s.Offset = UDim2.fromOffset(0, 12)
+			s.Spread = UDim2.fromOffset(14, 14)
 			s.ZIndex = -1
 			s.Parent = frame
 			return s
 		end)
 		if not ok then
-			shadow = nil
+			-- ignore
 		end
 	end
 	addPadding(frame, 12, 14, 12, 14)
@@ -4478,7 +4488,7 @@ function Vertex:Watermark(params)
 		ZIndex = 70,
 	}, getWatermarkGui())
 	addCorner(frame, RADIUS.Control)
-	addDropShadow(frame, { Blur = 36, YOffset = 8, Spread = 10, Transparency = 0.28 })
+	addDropShadow(frame, { Blur = 48, YOffset = 10, Spread = 14, Transparency = 0.16 })
 	addPadding(frame, 10, 16, 10, 14)
 	create("UIListLayout", {
 		FillDirection = Enum.FillDirection.Horizontal,
