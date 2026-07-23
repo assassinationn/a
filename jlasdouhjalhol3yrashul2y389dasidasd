@@ -514,6 +514,7 @@ local function textProps(size, color, font)
 		TextSize = size or TEXT.Body,
 		TextXAlignment = Enum.TextXAlignment.Left,
 		TextYAlignment = Enum.TextYAlignment.Center,
+		RichText = false,
 	}
 end
 
@@ -3910,36 +3911,44 @@ function Vertex:KeybindList(params)
 	local host = getKeybindListGui()
 
 	local listWidth = tonumber(params.Width) or 210
+	local panelRestTransparency = 0.06
 
-	-- CanvasGroup fades the whole panel via GroupTransparency so per-child
-	-- alpha never gets stuck after hide/show (Hide Keybind List, etc.).
-	local shell = create("CanvasGroup", {
+	-- Plain Frame (not CanvasGroup): CanvasGroup rasterizes and makes text blurry +
+	-- shows a square silhouette behind UICorner.
+	local frame = create("Frame", {
 		Name = "VertexKeybindList",
-		BackgroundTransparency = 1,
+		BackgroundColor3 = self.Theme.Surface,
+		BackgroundTransparency = panelRestTransparency,
 		BorderSizePixel = 0,
 		Size = UDim2.fromOffset(listWidth, 0),
 		AutomaticSize = Enum.AutomaticSize.Y,
 		AnchorPoint = params.AnchorPoint or Vector2.new(0, 0.5),
 		Position = params.Position or UDim2.new(0, 18, 0.5, 0),
-		GroupTransparency = 1,
 		Active = true,
 		Visible = false,
 		ZIndex = 80,
 	}, host)
-
-	local frame = create("Frame", {
-		Name = "Panel",
-		BackgroundColor3 = self.Theme.Surface,
-		BackgroundTransparency = 0.06,
-		BorderSizePixel = 0,
-		Size = UDim2.new(1, 0, 0, 0),
-		AutomaticSize = Enum.AutomaticSize.Y,
-		ZIndex = 80,
-	}, shell)
 	addCorner(frame, RADIUS.Control)
-	addDropShadow(frame, { Blur = 36, YOffset = 8, Spread = 10, Transparency = 0.28 })
+	-- UIShadow only (no ImageLabel fallback sibling — that square peeks past UICorner).
+	do
+		local ok, shadow = pcall(function()
+			local s = Instance.new("UIShadow")
+			s.Name = "DropShadow"
+			s.Color = Color3.fromRGB(0, 0, 0)
+			s.Transparency = 0.28
+			s.BlurRadius = UDim.new(0, 36)
+			s.Offset = UDim2.fromOffset(0, 8)
+			s.Spread = UDim2.fromOffset(10, 10)
+			s.ZIndex = -1
+			s.Parent = frame
+			return s
+		end)
+		if not ok then
+			shadow = nil
+		end
+	end
 	addPadding(frame, 12, 14, 12, 14)
-	makeDraggable(shell, shell)
+	makeDraggable(frame, frame)
 
 	create("UIListLayout", {
 		FillDirection = Enum.FillDirection.Vertical,
@@ -3954,6 +3963,8 @@ function Vertex:KeybindList(params)
 			Text = titleText,
 			Size = UDim2.new(1, 0, 0, 18),
 			TextXAlignment = Enum.TextXAlignment.Left,
+			RichText = false,
+			TextTransparency = 0,
 			LayoutOrder = 1,
 			ZIndex = 81,
 		}),
@@ -3986,7 +3997,7 @@ function Vertex:KeybindList(params)
 	}, content)
 
 	local list = {
-		Instance = shell,
+		Instance = frame,
 		Panel = frame,
 		Title = title,
 		Content = content,
@@ -4000,13 +4011,14 @@ function Vertex:KeybindList(params)
 		Window = params.Window,
 	}
 
-	local uiScale = create("UIScale", { Scale = 1 }, shell)
+	local uiScale = create("UIScale", { Scale = 1 }, frame)
 
 	local function shouldShow()
 		-- Any visible bind (toggleable On/Off or press key) keeps the panel up.
 		return not list.Disabled and not list._userHidden and (list._visibleCount or 0) > 0
 	end
 
+	-- Fade only the panel chrome + scale — never TextTransparency (keeps glyphs crisp).
 	local function setVisibleAnimated(want)
 		want = want == true
 		list._visGen += 1
@@ -4014,37 +4026,38 @@ function Vertex:KeybindList(params)
 
 		if want then
 			list._shown = true
-			shell.Visible = true
-			-- Always re-run the fade-in so a previous hide can't leave GroupTransparency at 1.
-			setNow(shell, "GroupTransparency", 1)
+			frame.Visible = true
+			title.TextTransparency = 0
+			setNow(frame, "BackgroundTransparency", 1)
 			setNow(uiScale, "Scale", 0.96)
-			motion(shell, "GroupTransparency", 0, 14)
+			motion(frame, "BackgroundTransparency", panelRestTransparency, 14)
 			motion(uiScale, "Scale", 1, 14)
-			task.delay(0.35, function()
-				if gen ~= list._visGen or not shell.Parent then
+			task.delay(0.32, function()
+				if gen ~= list._visGen or not frame.Parent then
 					return
 				end
-				setNow(shell, "GroupTransparency", 0)
+				setNow(frame, "BackgroundTransparency", panelRestTransparency)
 				setNow(uiScale, "Scale", 1)
+				title.TextTransparency = 0
 			end)
 		else
 			list._shown = false
-			if not shell.Visible then
-				setNow(shell, "GroupTransparency", 1)
+			if not frame.Visible then
 				return
 			end
-			motion(shell, "GroupTransparency", 1, 18)
+			motion(frame, "BackgroundTransparency", 1, 18)
 			motion(uiScale, "Scale", 0.96, 18)
 			task.delay(0.28, function()
-				if gen ~= list._visGen or not shell.Parent then
+				if gen ~= list._visGen or not frame.Parent then
 					return
 				end
 				if shouldShow() then
 					return
 				end
-				shell.Visible = false
-				setNow(shell, "GroupTransparency", 1)
+				frame.Visible = false
+				setNow(frame, "BackgroundTransparency", panelRestTransparency)
 				setNow(uiScale, "Scale", 1)
+				title.TextTransparency = 0
 			end)
 		end
 	end
@@ -4076,17 +4089,17 @@ function Vertex:KeybindList(params)
 		self._visGen += 1
 		local gen = self._visGen
 		self._shown = false
-		if not shell.Visible then
+		if not frame.Visible then
 			return
 		end
-		motion(shell, "GroupTransparency", 1, speed or 18)
+		motion(frame, "BackgroundTransparency", 1, speed or 18)
 		motion(uiScale, "Scale", 0.96, speed or 18)
 		task.delay(0.28, function()
-			if gen ~= self._visGen or not shell.Parent then
+			if gen ~= self._visGen or not frame.Parent then
 				return
 			end
-			shell.Visible = false
-			setNow(shell, "GroupTransparency", 1)
+			frame.Visible = false
+			setNow(frame, "BackgroundTransparency", panelRestTransparency)
 			setNow(uiScale, "Scale", 1)
 		end)
 	end
@@ -4133,6 +4146,8 @@ function Vertex:KeybindList(params)
 				Size = UDim2.new(1, -56, 0, 18),
 				TextXAlignment = Enum.TextXAlignment.Left,
 				TextTruncate = Enum.TextTruncate.AtEnd,
+				RichText = false,
+				TextTransparency = 0,
 				ZIndex = 83,
 			}),
 			row
@@ -4147,6 +4162,8 @@ function Vertex:KeybindList(params)
 				Position = UDim2.new(1, 0, 0.5, 0),
 				AutomaticSize = Enum.AutomaticSize.XY,
 				TextXAlignment = Enum.TextXAlignment.Right,
+				RichText = false,
+				TextTransparency = 0,
 				ZIndex = 83,
 			}),
 			row
@@ -4317,8 +4334,8 @@ function Vertex:KeybindList(params)
 				end
 				self.Binds[flag] = nil
 			end
-			if shell.Parent then
-				shell:Destroy()
+			if frame.Parent then
+				frame:Destroy()
 			end
 			for index, item in ipairs(Vertex.KeybindLists) do
 				if item == self then
@@ -4331,8 +4348,8 @@ function Vertex:KeybindList(params)
 			end
 		end
 
-		if shell.Visible and shell.Parent then
-			motion(shell, "GroupTransparency", 1, 18)
+		if frame.Visible and frame.Parent then
+			motion(frame, "BackgroundTransparency", 1, 18)
 			motion(uiScale, "Scale", 0.96, 18)
 			task.delay(0.28, function()
 				if gen ~= self._visGen then
