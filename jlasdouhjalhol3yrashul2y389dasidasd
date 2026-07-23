@@ -139,6 +139,22 @@ local SPACING = {
 	SideW = 178,
 }
 
+-- Design reference: 760x500 looks right on a 1366x768 viewport.
+-- The window keeps that fixed Size; a global UIScale grows/shrinks everything.
+local DESIGN_VIEWPORT = Vector2.new(1366, 768)
+local DESIGN_WINDOW = Vector2.new(760, 500)
+
+Vertex.UiScale = 1
+Vertex._scaleBindings = {}
+
+local getViewportSize
+local computeResponsiveScale
+local refreshAllUiScales
+local registerScaleBinding
+local setBindingAnim
+local ensureUiScaleWatcher
+
+
 --=====================================================================
 -- Low-level helpers
 --=====================================================================
@@ -343,6 +359,87 @@ local function setNow(instance, property, value)
 	if props then
 		props[property] = nil
 	end
+end
+
+function getViewportSize()
+	local camera = workspace.CurrentCamera
+	if camera then
+		return camera.ViewportSize
+	end
+	return DESIGN_VIEWPORT
+end
+
+function computeResponsiveScale()
+	local vp = getViewportSize()
+	local scale = math.min(vp.X / DESIGN_VIEWPORT.X, vp.Y / DESIGN_VIEWPORT.Y)
+	local maxScale = math.min(
+		(vp.X * 0.94) / DESIGN_WINDOW.X,
+		(vp.Y * 0.90) / DESIGN_WINDOW.Y
+	)
+	if maxScale < 0.05 then
+		maxScale = 0.05
+	end
+	return math.clamp(scale, math.min(0.7, maxScale), maxScale)
+end
+
+function refreshAllUiScales()
+	Vertex.UiScale = computeResponsiveScale()
+	for index = #Vertex._scaleBindings, 1, -1 do
+		local binding = Vertex._scaleBindings[index]
+		local scaleObj = binding and binding.instance
+		if not scaleObj or not scaleObj.Parent then
+			table.remove(Vertex._scaleBindings, index)
+		else
+			setNow(scaleObj, "Scale", Vertex.UiScale * (binding.anim or 1))
+		end
+	end
+end
+
+function registerScaleBinding(uiScale, initialAnim)
+	local binding = {
+		instance = uiScale,
+		anim = initialAnim or 1,
+	}
+	table.insert(Vertex._scaleBindings, binding)
+	setNow(uiScale, "Scale", Vertex.UiScale * binding.anim)
+	return binding
+end
+
+function setBindingAnim(binding, anim, animate, speed)
+	if not binding or not binding.instance then
+		return
+	end
+	binding.anim = anim or 1
+	local target = Vertex.UiScale * binding.anim
+	if animate then
+		motion(binding.instance, "Scale", target, speed or 16)
+	else
+		setNow(binding.instance, "Scale", target)
+	end
+end
+
+function ensureUiScaleWatcher()
+	if Vertex._uiScaleWatching then
+		return
+	end
+	Vertex._uiScaleWatching = true
+
+	local viewportConn
+	local function bindCamera(camera)
+		if viewportConn then
+			viewportConn:Disconnect()
+			viewportConn = nil
+		end
+		if camera then
+			viewportConn = connect(camera:GetPropertyChangedSignal("ViewportSize"), refreshAllUiScales)
+		end
+		refreshAllUiScales()
+	end
+
+	bindCamera(workspace.CurrentCamera)
+	connect(workspace:GetPropertyChangedSignal("CurrentCamera"), function()
+		bindCamera(workspace.CurrentCamera)
+	end)
 end
 
 -- Snapshot every fade-able transparency under `root` (plus root itself) so a
@@ -1410,7 +1507,7 @@ function Vertex:CreateWindow(options)
 		Name = "Window",
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		Position = UDim2.fromScale(0.5, 0.5),
-		Size = options.Size or UDim2.fromOffset(760, 500),
+		Size = options.Size or UDim2.fromOffset(DESIGN_WINDOW.X, DESIGN_WINDOW.Y),
 		BackgroundColor3 = Vertex.Theme.Background,
 		BorderSizePixel = 0,
 		ClipsDescendants = false,
@@ -1422,6 +1519,8 @@ function Vertex:CreateWindow(options)
 	addDropShadow(main, { Blur = 64, YOffset = 18, Spread = 22, Transparency = 0.14 })
 
 	local uiScale = create("UIScale", { Scale = 1 }, main)
+	ensureUiScaleWatcher()
+	local windowScaleBinding = registerScaleBinding(uiScale, 1)
 
 	----------------------------------------------------------------
 	-- Top bar (title + minimise, full-width drag handle)
@@ -1648,6 +1747,7 @@ function Vertex:CreateWindow(options)
 	})
 	local reopenShadowRest = 0.16
 	local reopenScale = create("UIScale", { Scale = 0.92 }, reopenChip)
+	local reopenScaleBinding = registerScaleBinding(reopenScale, 0.92)
 	addPadding(reopenChip, 8, 14, 8, 12)
 	create("UIListLayout", {
 		FillDirection = Enum.FillDirection.Horizontal,
@@ -1711,7 +1811,7 @@ function Vertex:CreateWindow(options)
 		reopenShown = show
 		if show then
 			reopenChip.Visible = true
-			setNow(reopenScale, "Scale", 0.9)
+			setBindingAnim(reopenScaleBinding, 0.9, false)
 			setNow(reopenChip, "BackgroundTransparency", 1)
 			setReopenShadowAlpha(1, false)
 			setNow(reopenLabel, "TextTransparency", 1)
@@ -1720,7 +1820,7 @@ function Vertex:CreateWindow(options)
 					setNow(child, "ImageTransparency", 1)
 				end
 			end
-			motion(reopenScale, "Scale", 1, 16)
+			setBindingAnim(reopenScaleBinding, 1, true, 16)
 			motion(reopenChip, "BackgroundTransparency", 0.06, 16)
 			setReopenShadowAlpha(reopenShadowRest, true, 16)
 			motion(reopenLabel, "TextTransparency", 0, 16)
@@ -1730,7 +1830,7 @@ function Vertex:CreateWindow(options)
 				end
 			end
 		else
-			motion(reopenScale, "Scale", 0.92, 18)
+			setBindingAnim(reopenScaleBinding, 0.92, true, 18)
 			motion(reopenChip, "BackgroundTransparency", 1, 18)
 			setReopenShadowAlpha(1, true, 18)
 			motion(reopenLabel, "TextTransparency", 1, 18)
@@ -1831,11 +1931,11 @@ function Vertex:CreateWindow(options)
 			local alpha = self._restAlpha
 			local rest = self._restPosition or main.Position
 
-			setNow(uiScale, "Scale", 0.9)
+			setBindingAnim(windowScaleBinding, 0.9, false)
 			setNow(main, "Position", rest - UDim2.fromOffset(0, 22))
 			setAlpha(alpha, false)
 
-			motion(uiScale, "Scale", 1, 13)
+			setBindingAnim(windowScaleBinding, 1, true, 13)
 			motion(main, "Position", rest, 15)
 			fadeAlpha(alpha, true, 14)
 
@@ -1863,7 +1963,7 @@ function Vertex:CreateWindow(options)
 				self._restPosition = rest
 			end
 
-			motion(uiScale, "Scale", 0.9, 19)
+			setBindingAnim(windowScaleBinding, 0.9, true, 19)
 			motion(main, "Position", rest + UDim2.fromOffset(0, 22), 19)
 			-- Fade the whole live tree, not a stale first-open snapshot.
 			fadeOutTree(main, 20)
@@ -1871,7 +1971,7 @@ function Vertex:CreateWindow(options)
 			task.delay(0.34, function()
 				if not self.Visible and gen == self._visGen then
 					screenGui.Enabled = false
-					setNow(uiScale, "Scale", 1)
+					setBindingAnim(windowScaleBinding, 1, false)
 					setNow(main, "Position", rest)
 					self._visAnimating = false
 					setReopenChipVisible(true)
@@ -1942,7 +2042,7 @@ function Vertex:CreateWindow(options)
 
 		local rest = main.Position
 		setNow(main, "Position", rest)
-		motion(uiScale, "Scale", 0.9, 18)
+		setBindingAnim(windowScaleBinding, 0.9, true, 18)
 		motion(main, "Position", rest + UDim2.fromOffset(0, 24), 18)
 		fadeOutTree(main, 20)
 
@@ -1950,11 +2050,15 @@ function Vertex:CreateWindow(options)
 		for _, watermark in ipairs(Vertex.Watermarks) do
 			if watermark.Instance and watermark.Instance.Parent then
 				local mark = watermark.Instance
-				local markScale = mark:FindFirstChildOfClass("UIScale")
-				if not markScale then
-					markScale = create("UIScale", { Scale = 1 }, mark)
+				if watermark._scaleBinding then
+					setBindingAnim(watermark._scaleBinding, 0.94, true, 18)
+				else
+					local markScale = mark:FindFirstChildOfClass("UIScale")
+					if not markScale then
+						markScale = create("UIScale", { Scale = 1 }, mark)
+					end
+					motion(markScale, "Scale", Vertex.UiScale * 0.94, 18)
 				end
-				motion(markScale, "Scale", 0.94, 18)
 				motion(mark, "Position", mark.Position + UDim2.fromOffset(0, -10), 18)
 				fadeOutTree(mark, 20)
 				if watermark._conn then
@@ -1981,7 +2085,7 @@ function Vertex:CreateWindow(options)
 						fadeOutTree(notif, 20)
 						motion(notif, "Position", UDim2.fromOffset(56, 0), 18)
 						if notifScale then
-							motion(notifScale, "Scale", 0.92, 18)
+							motion(notifScale, "Scale", Vertex.UiScale * 0.92, 18)
 						end
 					end
 				end
@@ -3810,6 +3914,8 @@ function Vertex:Notify(options)
 	})
 	local notifShadowRest = 0.16
 	local notifScale = create("UIScale", { Scale = 0.86 }, notification)
+	ensureUiScaleWatcher()
+	local notifScaleBinding = registerScaleBinding(notifScale, 0.86)
 
 	local function setNotifShadowAlpha(alpha, animate, speed)
 		if not notifShadow then
@@ -3877,7 +3983,7 @@ function Vertex:Notify(options)
 	setNotifShadowAlpha(1, false)
 	motion(notification, "BackgroundTransparency", 0, 14)
 	motion(notification, "Position", UDim2.fromOffset(-6, 0), 15)
-	motion(notifScale, "Scale", 1.045, 16)
+	setBindingAnim(notifScaleBinding, 1.045, true, 16)
 	setNotifShadowAlpha(notifShadowRest, true, 14)
 	motion(accentBar, "BackgroundTransparency", 0, 14)
 	motion(accentBar, "Size", UDim2.new(0, 3, 1, -24), 18)
@@ -3894,7 +4000,7 @@ function Vertex:Notify(options)
 			return
 		end
 		motion(notification, "Position", UDim2.fromOffset(0, 0), 13)
-		motion(notifScale, "Scale", 1, 12)
+		setBindingAnim(notifScaleBinding, 1, true, 12)
 	end)
 
 	task.delay(duration, function()
@@ -3911,7 +4017,7 @@ function Vertex:Notify(options)
 		setNotifShadowAlpha(1, true, 22)
 		motion(notification, "BackgroundTransparency", 1, 22)
 		motion(notification, "Position", UDim2.fromOffset(96, 0), 18)
-		motion(notifScale, "Scale", 0.9, 18)
+		setBindingAnim(notifScaleBinding, 0.9, true, 18)
 		task.wait(0.32)
 		if notification.Parent then
 			notification:Destroy()
@@ -4062,6 +4168,9 @@ function Vertex:KeybindList(params)
 	}
 
 	local uiScale = create("UIScale", { Scale = 1 }, frame)
+	ensureUiScaleWatcher()
+	local listScaleBinding = registerScaleBinding(uiScale, 1)
+	list._scaleBinding = listScaleBinding
 
 	local function shouldShow()
 		-- Any visible bind (toggleable On/Off or press key) keeps the panel up.
@@ -4079,15 +4188,15 @@ function Vertex:KeybindList(params)
 			frame.Visible = true
 			title.TextTransparency = 0
 			setNow(frame, "BackgroundTransparency", 1)
-			setNow(uiScale, "Scale", 0.96)
+			setBindingAnim(listScaleBinding, 0.96, false)
 			motion(frame, "BackgroundTransparency", panelRestTransparency, 14)
-			motion(uiScale, "Scale", 1, 14)
+			setBindingAnim(listScaleBinding, 1, true, 14)
 			task.delay(0.32, function()
 				if gen ~= list._visGen or not frame.Parent then
 					return
 				end
 				setNow(frame, "BackgroundTransparency", panelRestTransparency)
-				setNow(uiScale, "Scale", 1)
+				setBindingAnim(listScaleBinding, 1, false)
 				title.TextTransparency = 0
 			end)
 		else
@@ -4096,7 +4205,7 @@ function Vertex:KeybindList(params)
 				return
 			end
 			motion(frame, "BackgroundTransparency", 1, 18)
-			motion(uiScale, "Scale", 0.96, 18)
+			setBindingAnim(listScaleBinding, 0.96, true, 18)
 			task.delay(0.28, function()
 				if gen ~= list._visGen or not frame.Parent then
 					return
@@ -4106,7 +4215,7 @@ function Vertex:KeybindList(params)
 				end
 				frame.Visible = false
 				setNow(frame, "BackgroundTransparency", panelRestTransparency)
-				setNow(uiScale, "Scale", 1)
+				setBindingAnim(listScaleBinding, 1, false)
 				title.TextTransparency = 0
 			end)
 		end
@@ -4143,14 +4252,14 @@ function Vertex:KeybindList(params)
 			return
 		end
 		motion(frame, "BackgroundTransparency", 1, speed or 18)
-		motion(uiScale, "Scale", 0.96, speed or 18)
+		setBindingAnim(listScaleBinding, 0.96, true, speed or 18)
 		task.delay(0.28, function()
 			if gen ~= self._visGen or not frame.Parent then
 				return
 			end
 			frame.Visible = false
 			setNow(frame, "BackgroundTransparency", panelRestTransparency)
-			setNow(uiScale, "Scale", 1)
+			setBindingAnim(listScaleBinding, 1, false)
 		end)
 	end
 
@@ -4400,7 +4509,7 @@ function Vertex:KeybindList(params)
 
 		if frame.Visible and frame.Parent then
 			motion(frame, "BackgroundTransparency", 1, 18)
-			motion(uiScale, "Scale", 0.96, 18)
+			setBindingAnim(listScaleBinding, 0.96, true, 18)
 			task.delay(0.28, function()
 				if gen ~= self._visGen then
 					return
@@ -4513,6 +4622,10 @@ function Vertex:Watermark(params)
 	}, frame)
 	makeDraggable(frame, frame)
 
+	local watermarkScale = create("UIScale", { Scale = 1 }, frame)
+	ensureUiScaleWatcher()
+	local watermarkScaleBinding = registerScaleBinding(watermarkScale, 1)
+
 	local layoutOrder = 0
 	if iconSource and iconSource ~= "" then
 		layoutOrder += 1
@@ -4589,6 +4702,7 @@ function Vertex:Watermark(params)
 		PingLabel = pingLabel,
 		_fps = 60,
 		_ping = 0,
+		_scaleBinding = watermarkScaleBinding,
 	}
 
 	function watermark:SetText(text)
@@ -4935,6 +5049,9 @@ function Vertex:Destroy()
 	table.clear(self.Windows)
 	table.clear(self.Watermarks)
 	table.clear(self.KeybindLists)
+	table.clear(self._scaleBindings)
+	self.UiScale = 1
+	self._uiScaleWatching = false
 	self.KeyList = nil
 	table.clear(self.ActiveTooltips)
 	table.clear(self.ThemeListeners)
