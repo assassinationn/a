@@ -1,0 +1,4865 @@
+--[[
+	Vertex UI
+	A compact, one-file Roblox UI library.
+
+	- BuilderSans typography (heavy, readable)
+	- Near-black surfaces, soft field strokes, Heartbeat lerp smoothing
+	- Lucide icons (runtime) + optional window Icon/Logo
+	- Nexonix-compatible API aliases (Window/Page/Section/Toggle/...)
+
+	Quick start:
+		local Vertex = loadstring(game:HttpGet("YOUR_RAW_URL"))()
+		local Window = Vertex:Window({
+			Title = "Vertex",
+			Icon = "rbxassetid://11028823406",
+		})
+		local Main = Window:Page({ Name = "Main", Icon = "layout-dashboard" })
+		local General = Main:Section({ Name = "General" })
+
+		General:Toggle({
+			Name = "Enabled",
+			Default = false,
+			Callback = function(value) print(value) end,
+		})
+]]
+
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local HttpService = game:GetService("HttpService")
+local CoreGui = game:GetService("CoreGui")
+local StatsService = game:GetService("Stats")
+
+local flagData = {}
+
+local Vertex
+Vertex = {
+	Version = "0.5.1",
+	-- Backing store for Flags; assignment triggers debounced autosave.
+	_flagData = flagData,
+	Flags = setmetatable({}, {
+		__index = flagData,
+		__newindex = function(_, key, value)
+			flagData[key] = value
+			if
+				Vertex
+				and Vertex.ConfigState
+				and Vertex.ConfigState.AutoSave
+				and Vertex.ConfigState.AutoSaveReady
+				and not Vertex.ConfigState.Loading
+				and tostring(Vertex.ConfigState.Name or "") ~= ""
+				and type(Vertex.QueueConfigSave) == "function"
+			then
+				Vertex:QueueConfigSave()
+			end
+		end,
+	}),
+	SetFlags = {}, -- Flag → setter used by LoadConfig
+	Windows = {},
+	Connections = {},
+	Watermarks = {},
+	KeybindLists = {},
+	KeyList = nil,
+	ActiveTooltips = {},
+	ThemeListeners = {},
+	MenuKeybind = Enum.KeyCode.RightShift,
+	Directory = "nexonix",
+	Folders = {
+		Configs = "/Configs",
+		Assets = "/Assets",
+	},
+	ConfigState = {
+		AutoLoad = false,
+		Name = "",
+		Delay = 0.25,
+		Silent = false,
+		AutoSave = false,
+		AutoSaveReady = false,
+		Loading = false,
+		SaveToken = 0,
+		SaveDelay = 0.25,
+		PendingConfig = nil,
+	},
+}
+
+--=====================================================================
+-- Design tokens
+--=====================================================================
+
+Vertex.Theme = {
+	Background = Color3.fromRGB(5, 5, 5),
+	Surface = Color3.fromRGB(23, 23, 23),
+	SurfaceRaised = Color3.fromRGB(31, 31, 31),
+	SurfaceHover = Color3.fromRGB(43, 43, 43),
+	Text = Color3.fromRGB(244, 244, 244),
+	TextMuted = Color3.fromRGB(170, 170, 170),
+	TextDim = Color3.fromRGB(110, 110, 110),
+	Accent = Color3.fromRGB(115, 147, 179), -- #7393B3
+	AccentHover = Color3.fromRGB(140, 168, 196),
+	AccentText = Color3.fromRGB(183, 201, 219),
+	Danger = Color3.fromRGB(239, 68, 68),
+	Knob = Color3.fromRGB(245, 245, 245),
+}
+
+-- Hairline strokes: white at low opacity. Kept slightly thick + visible so
+-- Roblox doesn't render 1px strokes unevenly.
+local STROKE_COLOR = Color3.fromRGB(255, 255, 255)
+local STROKE_SOFT = 0.84
+local STROKE_STRONG = 0.72
+local STROKE_THICKNESS = 1.6
+-- Outline for input-like fields (text box, dropdown, keybind).
+local FIELD_STROKE = 0.95
+local FIELD_STROKE_THICKNESS = 1.6
+
+-- One radius scale for the whole library.
+local RADIUS = {
+	Window = 14,
+	Card = 10,
+	Control = 8,
+	Inner = 6,
+	Pill = 999,
+}
+
+local TEXT = {
+	Title = 18,
+	Section = 14,
+	Value = 15,
+	Label = 15,
+	Body = 14,
+	Small = 13,
+	Micro = 11,
+}
+
+local SPACING = {
+	Window = 16,
+	Section = 14,
+	Gap = 10,
+	ControlH = 46,
+	TopBar = 50,
+	SideW = 178,
+}
+
+--=====================================================================
+-- Low-level helpers
+--=====================================================================
+
+local function connect(signal, callback)
+	local connection = signal:Connect(callback)
+	table.insert(Vertex.Connections, connection)
+	return connection
+end
+
+local function create(className, properties, parent)
+	local instance = Instance.new(className)
+	for property, value in pairs(properties or {}) do
+		instance[property] = value
+	end
+	if parent then
+		instance.Parent = parent
+	end
+	return instance
+end
+
+local function addCorner(instance, radius)
+	return create("UICorner", {
+		CornerRadius = UDim.new(0, radius or RADIUS.Inner),
+	}, instance)
+end
+
+local function addStroke(instance, transparency, color, thickness)
+	return create("UIStroke", {
+		Color = color or STROKE_COLOR,
+		Transparency = transparency or STROKE_SOFT,
+		Thickness = thickness or STROKE_THICKNESS,
+		ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+	}, instance)
+end
+
+-- Soft drop shadow. Prefers native UIShadow; falls back to a 9-slice image
+-- parented as a sibling (never inside AutomaticSize — that balloons the layout).
+local function addDropShadow(target, opts)
+	opts = opts or {}
+	local transparency = opts.Transparency or 0.32
+	local yOffset = opts.YOffset or 10
+	local blur = opts.Blur or 36
+	local spread = opts.Spread or opts.Pad or 12
+	if typeof(spread) == "number" and spread > 20 then
+		-- Old Pad values were image bleed in px; map down for UIShadow spread.
+		spread = math.floor(spread * 0.2)
+	end
+
+	local ok, shadow = pcall(function()
+		local s = Instance.new("UIShadow")
+		s.Name = "DropShadow"
+		s.Color = Color3.fromRGB(0, 0, 0)
+		s.Transparency = transparency
+		s.BlurRadius = UDim.new(0, blur)
+		s.Offset = UDim2.fromOffset(0, yOffset)
+		s.Spread = UDim2.fromOffset(spread, spread)
+		s.ZIndex = -1
+		s.Parent = target
+		return s
+	end)
+	if ok and shadow then
+		return shadow
+	end
+
+	-- Legacy fallback: soft slice image as a sibling so AutomaticSize isn't polluted.
+	local host = target.Parent
+	if not host then
+		return nil
+	end
+	local pad = opts.Pad or 36
+	if pad < 24 then
+		pad = 36
+	end
+	local image = create("ImageLabel", {
+		Name = "DropShadow",
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		Image = "rbxassetid://5554236805",
+		ImageColor3 = Color3.fromRGB(0, 0, 0),
+		ImageTransparency = transparency,
+		ScaleType = Enum.ScaleType.Slice,
+		SliceCenter = Rect.new(23, 23, 277, 277),
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Size = UDim2.fromOffset(0, 0),
+		ZIndex = math.max((target.ZIndex or 1) - 1, 0),
+	}, host)
+
+	local function sync()
+		if not target.Parent or not image.Parent then
+			return
+		end
+		local size = target.AbsoluteSize
+		local pos = target.AbsolutePosition
+		local hostPos = host:IsA("ScreenGui") and Vector2.zero or host.AbsolutePosition
+		image.Size = UDim2.fromOffset(size.X + pad, size.Y + pad)
+		image.Position = UDim2.fromOffset(
+			math.floor(pos.X - hostPos.X + size.X * 0.5),
+			math.floor(pos.Y - hostPos.Y + size.Y * 0.5 + yOffset)
+		)
+	end
+
+	connect(target:GetPropertyChangedSignal("AbsoluteSize"), sync)
+	connect(target:GetPropertyChangedSignal("AbsolutePosition"), sync)
+	connect(target.AncestryChanged, function(_, parentNow)
+		if not parentNow and image.Parent then
+			image:Destroy()
+		end
+	end)
+	task.defer(sync)
+	return image
+end
+
+-- Squares off an interior edge of a rounded panel so its corner radius only
+-- shows where we want it (used to round only the window-facing corners).
+local function cornerFill(parent, anchor, position, size, zIndex)
+	return create("Frame", {
+		Name = "CornerFill",
+		BackgroundColor3 = Vertex.Theme.Surface,
+		BorderSizePixel = 0,
+		AnchorPoint = anchor,
+		Position = position,
+		Size = size,
+		ZIndex = zIndex or 3,
+	}, parent)
+end
+
+local function addPadding(instance, top, right, bottom, left)
+	return create("UIPadding", {
+		PaddingTop = UDim.new(0, top or 0),
+		PaddingRight = UDim.new(0, right or 0),
+		PaddingBottom = UDim.new(0, bottom or 0),
+		PaddingLeft = UDim.new(0, left or 0),
+	}, instance)
+end
+
+local function safeCall(callback, ...)
+	if type(callback) ~= "function" then
+		return
+	end
+	local success, message = pcall(callback, ...)
+	if not success then
+		warn("[Vertex UI] Callback failed: " .. tostring(message))
+	end
+end
+
+--=====================================================================
+-- Motion: frame-rate independent lerp smoothing on Heartbeat
+--=====================================================================
+
+local Motion = {} -- Motion[instance] = { [property] = { target, speed } }
+
+local function lerpValue(a, b, t)
+	local kind = typeof(a)
+	if kind == "number" then
+		return a + (b - a) * t
+	elseif kind == "Color3" then
+		return a:Lerp(b, t)
+	elseif kind == "UDim2" then
+		return a:Lerp(b, t)
+	elseif kind == "Vector2" then
+		return a:Lerp(b, t)
+	elseif kind == "UDim" then
+		return UDim.new(a.Scale + (b.Scale - a.Scale) * t, a.Offset + (b.Offset - a.Offset) * t)
+	end
+	return b
+end
+
+local function nearEnough(a, b)
+	local kind = typeof(a)
+	if kind == "number" then
+		return math.abs(a - b) < 0.01
+	elseif kind == "Color3" then
+		return math.abs(a.R - b.R) + math.abs(a.G - b.G) + math.abs(a.B - b.B) < 0.008
+	elseif kind == "UDim2" then
+		return math.abs(a.X.Scale - b.X.Scale) < 0.001
+			and math.abs(a.Y.Scale - b.Y.Scale) < 0.001
+			and math.abs(a.X.Offset - b.X.Offset) < 0.5
+			and math.abs(a.Y.Offset - b.Y.Offset) < 0.5
+	elseif kind == "Vector2" then
+		return (a - b).Magnitude < 0.5
+	elseif kind == "UDim" then
+		return math.abs(a.Scale - b.Scale) < 0.001 and math.abs(a.Offset - b.Offset) < 0.5
+	end
+	return true
+end
+
+-- Smoothly drive instance[property] toward target using exponential smoothing.
+local function motion(instance, property, target, speed)
+	local props = Motion[instance]
+	if not props then
+		props = {}
+		Motion[instance] = props
+	end
+	props[property] = { target = target, speed = speed or 16 }
+end
+
+-- Set a value instantly and clear any in-flight smoothing for it.
+local function setNow(instance, property, value)
+	instance[property] = value
+	local props = Motion[instance]
+	if props then
+		props[property] = nil
+	end
+end
+
+-- Snapshot every fade-able transparency under `root` (plus root itself) so a
+-- whole subtree can be faded out and later restored to its exact look.
+local function snapshotAlpha(root)
+	local list = { { root, "BackgroundTransparency", root.BackgroundTransparency } }
+	for _, inst in ipairs(root:GetDescendants()) do
+		if inst:IsA("GuiObject") then
+			list[#list + 1] = { inst, "BackgroundTransparency", inst.BackgroundTransparency }
+		end
+		if inst:IsA("TextLabel") or inst:IsA("TextButton") or inst:IsA("TextBox") then
+			list[#list + 1] = { inst, "TextTransparency", inst.TextTransparency }
+		end
+		if inst:IsA("ImageLabel") or inst:IsA("ImageButton") then
+			list[#list + 1] = { inst, "ImageTransparency", inst.ImageTransparency }
+		end
+		if inst:IsA("UIStroke") then
+			list[#list + 1] = { inst, "Transparency", inst.Transparency }
+		end
+		if inst.ClassName == "UIShadow" then
+			list[#list + 1] = { inst, "Transparency", inst.Transparency }
+		end
+	end
+	return list
+end
+
+-- Drive a snapshot toward shown (its captured values) or hidden (fully clear).
+local function fadeAlpha(list, shown, speed)
+	for _, entry in ipairs(list) do
+		if entry[1] and entry[1].Parent then
+			motion(entry[1], entry[2], shown and entry[3] or 1, speed)
+		end
+	end
+end
+
+local function setAlpha(list, shown)
+	for _, entry in ipairs(list) do
+		if entry[1] and entry[1].Parent then
+			setNow(entry[1], entry[2], shown and entry[3] or 1)
+		end
+	end
+end
+
+-- Fade every fade-able property under root to fully clear (not just a stale snapshot).
+local function fadeOutTree(root, speed)
+	local function apply(inst)
+		if not inst or not inst.Parent then
+			return
+		end
+		if inst:IsA("GuiObject") then
+			motion(inst, "BackgroundTransparency", 1, speed)
+		end
+		if inst:IsA("TextLabel") or inst:IsA("TextButton") or inst:IsA("TextBox") then
+			motion(inst, "TextTransparency", 1, speed)
+		end
+		if inst:IsA("ImageLabel") or inst:IsA("ImageButton") then
+			motion(inst, "ImageTransparency", 1, speed)
+		end
+		if inst:IsA("UIStroke") then
+			motion(inst, "Transparency", 1, speed)
+		end
+		if inst.ClassName == "UIShadow" then
+			motion(inst, "Transparency", 1, speed)
+		end
+	end
+	apply(root)
+	for _, inst in ipairs(root:GetDescendants()) do
+		apply(inst)
+	end
+end
+
+connect(RunService.Heartbeat, function(dt)
+	for instance, props in pairs(Motion) do
+		if typeof(instance) ~= "Instance" or not instance.Parent then
+			Motion[instance] = nil
+		else
+			for property, entry in pairs(props) do
+				local ok, current = pcall(function()
+					return instance[property]
+				end)
+				if not ok then
+					props[property] = nil
+				else
+					local t = 1 - math.exp(-dt * entry.speed)
+					local nextValue = lerpValue(current, entry.target, t)
+					if nearEnough(nextValue, entry.target) then
+						nextValue = entry.target
+						props[property] = nil
+					end
+					instance[property] = nextValue
+				end
+			end
+			if next(props) == nil then
+				Motion[instance] = nil
+			end
+		end
+	end
+end)
+
+--=====================================================================
+-- Fonts: BuilderSans
+--=====================================================================
+
+local FONT_FAMILY = "rbxasset://fonts/families/BuilderSans.json"
+
+local function weightedFont(weightEnum)
+	local success, font = pcall(Font.new, FONT_FAMILY, weightEnum, Enum.FontStyle.Normal)
+	if success and font then
+		return font
+	end
+	return Font.fromEnum(Enum.Font.BuilderSans)
+end
+
+Vertex.Fonts = {
+	Regular = weightedFont(Enum.FontWeight.Regular),
+	Medium = weightedFont(Enum.FontWeight.Medium),
+	SemiBold = weightedFont(Enum.FontWeight.SemiBold),
+	Bold = weightedFont(Enum.FontWeight.Bold),
+}
+Vertex.Font = Vertex.Fonts.SemiBold
+
+local function textProps(size, color, font)
+	return {
+		BackgroundTransparency = 1,
+		FontFace = font or Vertex.Fonts.SemiBold,
+		TextColor3 = color or Vertex.Theme.Text,
+		TextSize = size or TEXT.Body,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextYAlignment = Enum.TextYAlignment.Center,
+	}
+end
+
+local function merge(base, extra)
+	local result = {}
+	for key, value in pairs(base) do
+		result[key] = value
+	end
+	for key, value in pairs(extra or {}) do
+		result[key] = value
+	end
+	return result
+end
+
+--=====================================================================
+-- Lucide icons (runtime, with fallback)
+--=====================================================================
+
+local IconPack
+do
+	local ok, pack = pcall(function()
+		return loadstring(game:HttpGetAsync("https://raw.githubusercontent.com/Footagesus/Icons/main/Main-v2.lua"))()
+	end)
+	if ok and type(pack) == "table" then
+		pcall(function()
+			pack.SetIconsType("lucide")
+		end)
+		IconPack = pack
+	end
+end
+
+local function getIcon(name)
+	if not name or not IconPack then
+		return nil
+	end
+	local ok, image = pcall(IconPack.GetIcon, name)
+	if ok and type(image) == "string" and image ~= "" then
+		return image
+	end
+	return nil
+end
+
+-- Creates a Lucide ImageLabel when available, else a text-glyph fallback.
+local function makeGlyph(parent, iconName, fallback, size, color)
+	local image = getIcon(iconName)
+	if image then
+		return create("ImageLabel", {
+			Name = "Icon",
+			BackgroundTransparency = 1,
+			Image = image,
+			ImageColor3 = color or Vertex.Theme.Text,
+			Size = UDim2.fromOffset(size or 16, size or 16),
+			ZIndex = 4,
+		}, parent)
+	end
+	return create(
+		"TextLabel",
+		merge(textProps(size or 16, color or Vertex.Theme.Text, Vertex.Fonts.Bold), {
+			Name = "Icon",
+			Text = fallback or "?",
+			TextXAlignment = Enum.TextXAlignment.Center,
+			Size = UDim2.fromOffset(size or 16, size or 16),
+			ZIndex = 4,
+		}),
+		parent
+	)
+end
+
+-- Recolor a glyph regardless of whether it is an image or a text fallback.
+local function paintGlyph(glyph, color, speed)
+	if glyph:IsA("ImageLabel") then
+		motion(glyph, "ImageColor3", color, speed or 18)
+	else
+		motion(glyph, "TextColor3", color, speed or 18)
+	end
+end
+
+--=====================================================================
+-- Behaviour helpers
+--=====================================================================
+
+local function getGuiParent()
+	if type(gethui) == "function" then
+		local success, result = pcall(gethui)
+		if success and result then
+			return result
+		end
+	end
+	local player = Players.LocalPlayer
+	return (player and player:FindFirstChildOfClass("PlayerGui")) or CoreGui
+end
+
+local function hoverFill(button, normalColor, hoverColor, visual)
+	visual = visual or button
+	button.AutoButtonColor = false
+	connect(button.MouseEnter, function()
+		motion(visual, "BackgroundColor3", hoverColor, 20)
+	end)
+	connect(button.MouseLeave, function()
+		motion(visual, "BackgroundColor3", normalColor, 20)
+	end)
+end
+
+-- Robust dragging: drag from anywhere on the given handle.
+local function makeDraggable(handle, target)
+	local dragging = false
+	local dragInput
+	local dragStart
+	local startPosition
+
+	connect(handle.InputBegan, function(input)
+		if
+			input.UserInputType == Enum.UserInputType.MouseButton1
+			or input.UserInputType == Enum.UserInputType.Touch
+		then
+			dragging = true
+			dragStart = input.Position
+			-- Cancel any in-flight position smoothing (e.g. the open animation)
+			-- so it can't yank the window back to centre when we let go.
+			setNow(target, "Position", target.Position)
+			startPosition = target.Position
+			dragInput = input
+
+			local changed
+			changed = input.Changed:Connect(function()
+				if input.UserInputState == Enum.UserInputState.End then
+					dragging = false
+					changed:Disconnect()
+				end
+			end)
+		end
+	end)
+
+	connect(UserInputService.InputChanged, function(input)
+		if
+			input.UserInputType == Enum.UserInputType.MouseMovement
+			or input.UserInputType == Enum.UserInputType.Touch
+		then
+			dragInput = input
+		end
+	end)
+
+	connect(UserInputService.InputChanged, function(input)
+		if dragging and input == dragInput and dragStart then
+			local delta = input.Position - dragStart
+			-- setNow keeps clearing the Position motion entry each frame so the
+			-- smoothing loop can't override the drag.
+			setNow(target, "Position", UDim2.new(
+				startPosition.X.Scale,
+				startPosition.X.Offset + delta.X,
+				startPosition.Y.Scale,
+				startPosition.Y.Offset + delta.Y
+			))
+		end
+	end)
+end
+
+-- A single, consistent control-row shell used by every component.
+local function makeControl(section, height)
+	local row = create("Frame", {
+		Name = "Control",
+		BackgroundColor3 = Vertex.Theme.SurfaceRaised,
+		BorderSizePixel = 0,
+		Size = UDim2.new(1, 0, 0, height or SPACING.ControlH),
+		ClipsDescendants = true,
+		ZIndex = 3,
+	}, section.Container)
+	addCorner(row, RADIUS.Control)
+	-- No stroke on control rows: the raised background already separates them,
+	-- and stacking a stroke inside the section card looks like boxes-in-boxes.
+	return row
+end
+
+-- Centered label for single-line controls (toggle, button, keybind, label).
+local function inlineLabel(row, name, description)
+	local label = create(
+		"TextLabel",
+		merge(textProps(TEXT.Label, Vertex.Theme.Text, Vertex.Fonts.SemiBold), {
+			Name = "Label",
+			Text = name or "Control",
+			Position = UDim2.fromOffset(14, description and 8 or 0),
+			Size = UDim2.new(1, -74, description and 0 or 1, description and 18 or 0),
+			TextTruncate = Enum.TextTruncate.AtEnd,
+			ZIndex = 3,
+		}),
+		row
+	)
+	if description then
+		create(
+			"TextLabel",
+			merge(textProps(TEXT.Small, Vertex.Theme.TextMuted, Vertex.Fonts.Medium), {
+				Name = "Description",
+				Text = description,
+				Position = UDim2.fromOffset(14, 28),
+				Size = UDim2.new(1, -74, 0, 16),
+				TextTruncate = Enum.TextTruncate.AtEnd,
+				ZIndex = 3,
+			}),
+			row
+		)
+	end
+	return label
+end
+
+-- Top-aligned label for stacked controls (slider, input, dropdown).
+local function stackLabel(row, name)
+	return create(
+		"TextLabel",
+		merge(textProps(TEXT.Label, Vertex.Theme.Text, Vertex.Fonts.SemiBold), {
+			Name = "Label",
+			Text = name or "Control",
+			Position = UDim2.fromOffset(14, 10),
+			Size = UDim2.new(1, -28, 0, 18),
+			TextTruncate = Enum.TextTruncate.AtEnd,
+			ZIndex = 3,
+		}),
+		row
+	)
+end
+
+-- Shared control methods so Vertex mirrors Nexonix's Set / SetVisibility / SetText.
+local function attachControlApi(control, labelInstance)
+	function control:SetVisibility(visible)
+		if self.Instance then
+			self.Instance.Visible = visible == true
+		end
+	end
+	function control:SetText(text)
+		if labelInstance then
+			labelInstance.Text = tostring(text)
+		elseif self.Label then
+			self.Label.Text = tostring(text)
+		end
+	end
+	return control
+end
+
+local function registerFlag(flag, setter)
+	if flag then
+		Vertex.SetFlags[flag] = setter
+	end
+end
+
+local function ensureConfigFolders()
+	if type(isfolder) ~= "function" or type(makefolder) ~= "function" then
+		return
+	end
+	local directory = Vertex.Directory or "nexonix"
+	if not isfolder(directory) then
+		pcall(makefolder, directory)
+	end
+	for _, folder in pairs(Vertex.Folders or {}) do
+		local path = directory .. folder
+		if not isfolder(path) then
+			pcall(makefolder, path)
+		end
+	end
+end
+
+local function resolveKeyCode(key)
+	if typeof(key) == "EnumItem" then
+		return key
+	end
+	local name = tostring(key or "")
+	name = name:gsub("^Enum%.KeyCode%.", "")
+	if name == "" or name == "Unknown" then
+		return nil
+	end
+	local ok, enumItem = pcall(function()
+		return Enum.KeyCode[name]
+	end)
+	if ok and typeof(enumItem) == "EnumItem" then
+		return enumItem
+	end
+	return nil
+end
+
+local function colorToHex(color)
+	return string.format(
+		"#%02X%02X%02X",
+		math.floor(color.R * 255 + 0.5),
+		math.floor(color.G * 255 + 0.5),
+		math.floor(color.B * 255 + 0.5)
+	)
+end
+
+local function hexToColor(hex)
+	hex = tostring(hex or ""):gsub("#", "")
+	if #hex ~= 6 then
+		return Color3.new(1, 1, 1)
+	end
+	local r = tonumber(hex:sub(1, 2), 16) or 255
+	local g = tonumber(hex:sub(3, 4), 16) or 255
+	local b = tonumber(hex:sub(5, 6), 16) or 255
+	return Color3.fromRGB(r, g, b)
+end
+
+local function clearTooltips()
+	for _, tip in ipairs(Vertex.ActiveTooltips) do
+		if tip and tip.Parent then
+			tip:Destroy()
+		end
+	end
+	table.clear(Vertex.ActiveTooltips)
+end
+
+-- Lightweight hover tooltip attached to any GuiObject.
+-- Parent to the target's ScreenGui so hide/close of the window removes it.
+local function attachTooltip(target, text)
+	if not text or text == "" then
+		return
+	end
+	local tip
+
+	local function destroyTip()
+		if tip then
+			for index, item in ipairs(Vertex.ActiveTooltips) do
+				if item == tip then
+					table.remove(Vertex.ActiveTooltips, index)
+					break
+				end
+			end
+			if tip.Parent then
+				tip:Destroy()
+			end
+			tip = nil
+		end
+	end
+
+	local function screenGuiOf(instance)
+		local current = instance
+		while current do
+			if current:IsA("ScreenGui") then
+				return current
+			end
+			current = current.Parent
+		end
+		return nil
+	end
+
+	connect(target.MouseEnter, function()
+		destroyTip()
+		local parent = screenGuiOf(target)
+		if not parent or not parent.Enabled then
+			return
+		end
+		tip = create("Frame", {
+			Name = "VertexTooltip",
+			BackgroundColor3 = Vertex.Theme.SurfaceRaised,
+			BorderSizePixel = 0,
+			AutomaticSize = Enum.AutomaticSize.XY,
+			ZIndex = 200,
+		}, parent)
+		addCorner(tip, RADIUS.Inner)
+		addPadding(tip, 6, 10, 6, 10)
+		create(
+			"TextLabel",
+			merge(textProps(TEXT.Small, Vertex.Theme.Text, Vertex.Fonts.Medium), {
+				Text = tostring(text),
+				AutomaticSize = Enum.AutomaticSize.XY,
+				ZIndex = 201,
+			}),
+			tip
+		)
+		local mouse = UserInputService:GetMouseLocation()
+		tip.Position = UDim2.fromOffset(mouse.X + 14, mouse.Y + 14)
+		table.insert(Vertex.ActiveTooltips, tip)
+	end)
+	connect(target.MouseLeave, destroyTip)
+	connect(UserInputService.InputChanged, function(input)
+		if tip and tip.Parent and input.UserInputType == Enum.UserInputType.MouseMovement then
+			local parent = screenGuiOf(target)
+			if not parent or not parent.Enabled then
+				destroyTip()
+				return
+			end
+			local mouse = UserInputService:GetMouseLocation()
+			tip.Position = UDim2.fromOffset(mouse.X + 14, mouse.Y + 14)
+		end
+	end)
+	-- If the hovered control is destroyed (window close), drop the tip.
+	connect(target.AncestryChanged, function(_, parent)
+		if not parent then
+			destroyTip()
+		end
+	end)
+end
+
+local function normalizeKeyMode(mode)
+	mode = tostring(mode or "Toggle")
+	if string.lower(mode) == "hold" then
+		return "Hold"
+	end
+	return "Toggle"
+end
+
+-- Gear button + Hold/Toggle popover next to a keybind pill.
+local function attachKeybindModeSettings(parent, keyControl, rightOffset)
+	rightOffset = rightOffset or 14
+	local settingsBtn = create("TextButton", {
+		Name = "KeybindSettings",
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, -rightOffset, 0.5, 0),
+		Size = UDim2.fromOffset(28, 28),
+		BackgroundColor3 = Vertex.Theme.SurfaceRaised,
+		BorderSizePixel = 0,
+		Text = "",
+		AutoButtonColor = false,
+		Active = true,
+		ZIndex = 8,
+	}, parent)
+	addCorner(settingsBtn, RADIUS.Inner)
+	-- Prefer Lucide "settings"; fall back to "sliders-horizontal" then a plain glyph.
+	local gear = makeGlyph(settingsBtn, "settings", "⚙", 15, Vertex.Theme.TextMuted)
+	if gear:IsA("TextLabel") then
+		gear:Destroy()
+		gear = makeGlyph(settingsBtn, "sliders-horizontal", "☰", 15, Vertex.Theme.TextMuted)
+	end
+	gear.AnchorPoint = Vector2.new(0.5, 0.5)
+	gear.Position = UDim2.fromScale(0.5, 0.5)
+	if gear:IsA("ImageLabel") then
+		gear.ScaleType = Enum.ScaleType.Fit
+		gear.ImageTransparency = 0
+	end
+
+	local function screenGuiOf(instance)
+		local current = instance
+		while current do
+			if current:IsA("ScreenGui") then
+				return current
+			end
+			current = current.Parent
+		end
+		return getGuiParent()
+	end
+
+	-- Parent to ScreenGui so ScrollingFrames don't clip the menu.
+	local popover = create("Frame", {
+		Name = "ModePopover",
+		Visible = false,
+		BackgroundColor3 = Vertex.Theme.SurfaceRaised,
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		AnchorPoint = Vector2.new(1, 0),
+		Size = UDim2.fromOffset(120, 78),
+		ZIndex = 120,
+	}, screenGuiOf(parent))
+	addCorner(popover, RADIUS.Control)
+	local popShadow = addDropShadow(popover, {
+		Blur = 40,
+		YOffset = 10,
+		Spread = 12,
+		Transparency = 0.28,
+	})
+	local popShadowRest = 0.28
+	addPadding(popover, 6, 6, 6, 6)
+	local popScale = create("UIScale", { Scale = 0.92 }, popover)
+	create("UIListLayout", {
+		Padding = UDim.new(0, 0),
+		SortOrder = Enum.SortOrder.LayoutOrder,
+	}, popover)
+
+	local function setPopShadowAlpha(alpha, animate, speed)
+		if not popShadow then
+			return
+		end
+		if popShadow.ClassName == "UIShadow" then
+			if animate then
+				motion(popShadow, "Transparency", alpha, speed)
+			else
+				setNow(popShadow, "Transparency", alpha)
+			end
+		elseif popShadow:IsA("ImageLabel") then
+			if animate then
+				motion(popShadow, "ImageTransparency", alpha, speed)
+			else
+				setNow(popShadow, "ImageTransparency", alpha)
+			end
+		end
+	end
+
+	local modeButtons = {}
+	local divider
+	local function refreshModes()
+		for modeName, button in pairs(modeButtons) do
+			local selected = keyControl.Mode == modeName
+			button.BackgroundTransparency = 1
+			button.FontFace = selected and Vertex.Fonts.Bold or Vertex.Fonts.Medium
+			motion(button, "TextColor3", selected and Vertex.Theme.Text or Vertex.Theme.TextMuted, 18)
+			motion(button, "TextSize", selected and TEXT.Label or TEXT.Small, 18)
+		end
+	end
+
+	local function placePopover()
+		local gui = screenGuiOf(settingsBtn)
+		popover.Parent = gui
+		-- Sit to the left of the cursor (AnchorPoint is top-right).
+		local mouse = UserInputService:GetMouseLocation()
+		local x = math.floor(mouse.X - 6)
+		local y = math.floor(mouse.Y + 10)
+		popover.Position = UDim2.fromOffset(math.max(8, x), math.max(8, y))
+	end
+
+	local isOpen = false
+	local function setOpen(wantOpen)
+		wantOpen = wantOpen == true
+		if wantOpen == isOpen then
+			return
+		end
+		isOpen = wantOpen
+		if isOpen then
+			refreshModes()
+			popover.Visible = true
+			placePopover()
+			task.defer(placePopover)
+			setNow(popScale, "Scale", 0.92)
+			setNow(popover, "BackgroundTransparency", 1)
+			setPopShadowAlpha(1, false)
+			for _, button in pairs(modeButtons) do
+				setNow(button, "TextTransparency", 1)
+				setNow(button, "BackgroundTransparency", 1)
+			end
+			if divider then
+				setNow(divider, "BackgroundTransparency", 1)
+			end
+			motion(popScale, "Scale", 1, 16)
+			motion(popover, "BackgroundTransparency", 0, 16)
+			setPopShadowAlpha(popShadowRest, true, 16)
+			for _, button in pairs(modeButtons) do
+				motion(button, "TextTransparency", 0, 16)
+			end
+			if divider then
+				motion(divider, "BackgroundTransparency", 0.85, 16)
+			end
+		else
+			motion(popScale, "Scale", 0.92, 20)
+			motion(popover, "BackgroundTransparency", 1, 20)
+			setPopShadowAlpha(1, true, 20)
+			for _, button in pairs(modeButtons) do
+				motion(button, "TextTransparency", 1, 20)
+			end
+			if divider then
+				motion(divider, "BackgroundTransparency", 1, 20)
+			end
+			task.delay(0.18, function()
+				if not isOpen and popover.Parent then
+					popover.Visible = false
+				end
+			end)
+		end
+	end
+
+	local toggleBtn = create(
+		"TextButton",
+		merge(textProps(TEXT.Small, Vertex.Theme.TextMuted, Vertex.Fonts.Medium), {
+			Name = "Toggle",
+			BackgroundTransparency = 1,
+			BorderSizePixel = 0,
+			Size = UDim2.new(1, 0, 0, 30),
+			Text = "Toggle",
+			TextXAlignment = Enum.TextXAlignment.Center,
+			AutoButtonColor = false,
+			ZIndex = 121,
+			LayoutOrder = 1,
+		}),
+		popover
+	)
+	modeButtons.Toggle = toggleBtn
+
+	divider = create("Frame", {
+		Name = "Divider",
+		BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+		BackgroundTransparency = 0.85,
+		BorderSizePixel = 0,
+		Size = UDim2.new(1, 0, 0, 1),
+		ZIndex = 121,
+		LayoutOrder = 2,
+	}, popover)
+
+	local holdBtn = create(
+		"TextButton",
+		merge(textProps(TEXT.Small, Vertex.Theme.TextMuted, Vertex.Fonts.Medium), {
+			Name = "Hold",
+			BackgroundTransparency = 1,
+			BorderSizePixel = 0,
+			Size = UDim2.new(1, 0, 0, 30),
+			Text = "Hold",
+			TextXAlignment = Enum.TextXAlignment.Center,
+			AutoButtonColor = false,
+			ZIndex = 121,
+			LayoutOrder = 3,
+		}),
+		popover
+	)
+	modeButtons.Hold = holdBtn
+
+	for modeName, button in pairs(modeButtons) do
+		connect(button.MouseButton1Click, function()
+			keyControl:SetMode(modeName)
+			refreshModes()
+		end)
+	end
+	refreshModes()
+
+	connect(settingsBtn.MouseButton1Click, function()
+		setOpen(not isOpen)
+	end)
+	connect(settingsBtn.MouseEnter, function()
+		motion(settingsBtn, "BackgroundColor3", Vertex.Theme.SurfaceHover, 20)
+		paintGlyph(gear, Vertex.Theme.Text)
+	end)
+	connect(settingsBtn.MouseLeave, function()
+		motion(settingsBtn, "BackgroundColor3", Vertex.Theme.SurfaceRaised, 20)
+		paintGlyph(gear, Vertex.Theme.TextMuted)
+	end)
+
+	-- Close when clicking elsewhere.
+	connect(UserInputService.InputBegan, function(input)
+		if not isOpen then
+			return
+		end
+		if
+			input.UserInputType ~= Enum.UserInputType.MouseButton1
+			and input.UserInputType ~= Enum.UserInputType.Touch
+		then
+			return
+		end
+		task.defer(function()
+			if not isOpen then
+				return
+			end
+			local pos = input.Position
+			local pPos, pSize = popover.AbsolutePosition, popover.AbsoluteSize
+			local sPos, sSize = settingsBtn.AbsolutePosition, settingsBtn.AbsoluteSize
+			local overPopover = pos.X >= pPos.X
+				and pos.X <= pPos.X + pSize.X
+				and pos.Y >= pPos.Y
+				and pos.Y <= pPos.Y + pSize.Y
+			local overBtn = pos.X >= sPos.X
+				and pos.X <= sPos.X + sSize.X
+				and pos.Y >= sPos.Y
+				and pos.Y <= sPos.Y + sSize.Y
+			if not overPopover and not overBtn then
+				setOpen(false)
+			end
+		end)
+	end)
+
+	connect(settingsBtn.AncestryChanged, function(_, parentNow)
+		if not parentNow and popover.Parent then
+			popover:Destroy()
+		end
+	end)
+
+	local oldSetMode = keyControl.SetMode
+	function keyControl:SetMode(mode)
+		if oldSetMode then
+			oldSetMode(self, mode)
+		else
+			self.Mode = normalizeKeyMode(mode)
+		end
+		refreshModes()
+	end
+
+	return settingsBtn
+end
+
+-- One-shot / Toggle / Hold input wiring.
+-- Toggleable keybinds show Hold/Toggle settings; one-shot keybinds fire once on press.
+local function wireKeybindRuntime(keyControl, options)
+	options = options or {}
+	local toggleable = options.Toggleable == true
+	keyControl.Toggleable = toggleable
+	if toggleable then
+		keyControl.Mode = normalizeKeyMode(options.Mode or keyControl.Mode or "Toggle")
+	else
+		keyControl.Mode = "Press"
+	end
+	keyControl.Active = false
+
+	function keyControl:SetActive(active)
+		active = active == true
+		if self.Active == active then
+			return
+		end
+		self.Active = active
+		if self._listEntry and self._listEntry.SetActive then
+			self._listEntry:SetActive(active)
+		end
+		safeCall(options.OnActive, active)
+		if active then
+			safeCall(options.Pressed, true)
+		end
+	end
+
+	connect(UserInputService.InputBegan, function(input, processed)
+		if processed or keyControl._listening then
+			return
+		end
+		if input.KeyCode == Enum.KeyCode.Unknown or input.KeyCode ~= keyControl.Value then
+			return
+		end
+		if not keyControl.Toggleable then
+			safeCall(options.Pressed, true)
+			safeCall(options.OnActive, true)
+			if keyControl._listEntry and keyControl._listEntry.Pulse then
+				keyControl._listEntry:Pulse()
+			end
+			return
+		end
+		if keyControl.Mode == "Hold" then
+			keyControl:SetActive(true)
+		else
+			keyControl:SetActive(not keyControl.Active)
+		end
+	end)
+	connect(UserInputService.InputEnded, function(input)
+		if not keyControl.Toggleable or keyControl.Mode ~= "Hold" then
+			return
+		end
+		if input.KeyCode == keyControl.Value then
+			keyControl:SetActive(false)
+		end
+	end)
+end
+
+-- Attach a keybind control to the active KeybindList (if any).
+local function linkKeybindToList(keyControl, options, fallbackName)
+	options = options or {}
+	local list = Vertex.KeyList
+	if not list or type(list.Register) ~= "function" then
+		return
+	end
+
+	local name = options.ListName or options.Name or fallbackName or keyControl.Flag or "Keybind"
+	keyControl._listEntry = list:Register({
+		Flag = keyControl.Flag,
+		Name = name,
+		Toggleable = keyControl.Toggleable == true,
+		Mode = keyControl.Mode,
+		Key = keyControl.Value and keyControl.Value.Name or "Unknown",
+		Active = keyControl.Active == true,
+		Visible = true,
+		Control = keyControl,
+	})
+
+	local previousSetVisibility = keyControl.SetVisibility
+	function keyControl:SetVisibility(visible)
+		visible = visible == true
+		if previousSetVisibility then
+			previousSetVisibility(self, visible)
+		elseif self.Instance then
+			self.Instance.Visible = visible
+		end
+		if self._listEntry and self._listEntry.SetVisibility then
+			self._listEntry:SetVisibility(visible)
+		end
+	end
+
+	local previousSet = keyControl.Set
+	if type(previousSet) == "function" then
+		function keyControl:Set(...)
+			previousSet(self, ...)
+			if self._listEntry then
+				if self._listEntry.SetKey then
+					self._listEntry:SetKey(self.Value and self.Value.Name or "Unknown")
+				end
+				if self.Toggleable and self._listEntry.SetMode then
+					self._listEntry:SetMode(self.Mode)
+				end
+				if self.Toggleable and self._listEntry.SetActive then
+					self._listEntry:SetActive(self.Active == true)
+				end
+			end
+		end
+	end
+
+	local previousSetMode = keyControl.SetMode
+	if type(previousSetMode) == "function" then
+		function keyControl:SetMode(...)
+			previousSetMode(self, ...)
+			if self._listEntry and self._listEntry.SetMode then
+				self._listEntry:SetMode(self.Mode)
+			end
+		end
+	end
+end
+
+--=====================================================================
+-- Public: theming
+--=====================================================================
+
+-- Register a callback that re-applies theme colours. Return false to drop it.
+local function watchTheme(fn)
+	table.insert(Vertex.ThemeListeners, fn)
+end
+
+local function applyTheme()
+	local alive = {}
+	for _, fn in ipairs(Vertex.ThemeListeners) do
+		local ok, keep = pcall(fn)
+		if ok and keep ~= false then
+			alive[#alive + 1] = fn
+		end
+	end
+	Vertex.ThemeListeners = alive
+end
+
+function Vertex:SetTheme(overrides)
+	overrides = overrides or {}
+	for key, value in pairs(overrides) do
+		if self.Theme[key] ~= nil and typeof(value) == "Color3" then
+			self.Theme[key] = value
+		end
+	end
+	if typeof(overrides.Accent) == "Color3" then
+		if typeof(overrides.AccentHover) ~= "Color3" then
+			self.Theme.AccentHover = overrides.Accent:Lerp(Color3.new(1, 1, 1), 0.18)
+		end
+		if typeof(overrides.AccentText) ~= "Color3" then
+			self.Theme.AccentText = overrides.Accent:Lerp(Color3.new(1, 1, 1), 0.35)
+		end
+	end
+	applyTheme()
+end
+
+--=====================================================================
+-- Public: windows
+--=====================================================================
+
+function Vertex:CreateWindow(options)
+	options = options or {}
+
+	local persistentConfigName = tostring(options.ConfigName or options.FileName or "")
+	if persistentConfigName ~= "" then
+		ensureConfigFolders()
+		self.ConfigState.AutoSave = true
+		self.ConfigState.AutoSaveReady = false
+		self.ConfigState.Loading = false
+		self.ConfigState.Name = persistentConfigName
+		self.ConfigState.SaveToken = 0
+		self.ConfigState.SaveDelay = tonumber(options.SaveDelay or options.AutoSaveDelay) or 0.25
+	else
+		self.ConfigState.AutoSave = false
+		self.ConfigState.AutoSaveReady = false
+		self.ConfigState.Loading = false
+		self.ConfigState.Name = ""
+		self.ConfigState.SaveToken = 0
+		self.ConfigState.SaveDelay = 0.25
+	end
+
+	local screenGui = create("ScreenGui", {
+		Name = "VertexUI",
+		ResetOnSpawn = false,
+		IgnoreGuiInset = true,
+		ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+		DisplayOrder = options.DisplayOrder or 50,
+	}, getGuiParent())
+
+	if syn and type(syn.protect_gui) == "function" then
+		pcall(syn.protect_gui, screenGui)
+	end
+
+	local main = create("Frame", {
+		Name = "Window",
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.5),
+		Size = options.Size or UDim2.fromOffset(760, 500),
+		BackgroundColor3 = Vertex.Theme.Background,
+		BorderSizePixel = 0,
+		ClipsDescendants = false,
+		ZIndex = 2,
+	}, screenGui)
+	addCorner(main, RADIUS.Window)
+
+	-- Soft drop shadow under the window chrome.
+	addDropShadow(main, { Blur = 48, YOffset = 14, Spread = 16, Transparency = 0.28 })
+
+	local uiScale = create("UIScale", { Scale = 1 }, main)
+
+	----------------------------------------------------------------
+	-- Top bar (title + minimise, full-width drag handle)
+	----------------------------------------------------------------
+	local topBar = create("Frame", {
+		Name = "TopBar",
+		BackgroundColor3 = Vertex.Theme.Surface,
+		BorderSizePixel = 0,
+		Size = UDim2.new(1, 0, 0, SPACING.TopBar),
+		Active = true,
+		ZIndex = 4,
+	}, main)
+	-- Round the top corners to match the window; square off the bottom edge.
+	addCorner(topBar, RADIUS.Window)
+	cornerFill(topBar, Vector2.new(0, 1), UDim2.new(0, 0, 1, 0), UDim2.new(1, 0, 0, RADIUS.Window), 4)
+
+	create("Frame", {
+		Name = "TopDivider",
+		BackgroundColor3 = STROKE_COLOR,
+		BackgroundTransparency = STROKE_SOFT,
+		BorderSizePixel = 0,
+		Position = UDim2.new(0, 0, 1, -1),
+		Size = UDim2.new(1, 0, 0, 1),
+		ZIndex = 5,
+	}, topBar)
+
+	local brand = create("Frame", {
+		Name = "BrandMark",
+		BackgroundColor3 = Vertex.Theme.Accent,
+		BorderSizePixel = 0,
+		Position = UDim2.fromOffset(16, 13),
+		Size = UDim2.fromOffset(4, SPACING.TopBar - 26),
+		ZIndex = 5,
+	}, topBar)
+	addCorner(brand, RADIUS.Pill)
+	watchTheme(function()
+		if not brand.Parent then
+			return false
+		end
+		motion(brand, "BackgroundColor3", Vertex.Theme.Accent, 18)
+	end)
+
+	local titleLeft = 30
+	local iconSource = options.Icon or options.Logo or options.icon or options.logo
+	if iconSource and iconSource ~= "" then
+		brand.Visible = false
+		local windowIcon = create("ImageLabel", {
+			Name = "WindowIcon",
+			BackgroundTransparency = 1,
+			Image = tostring(iconSource),
+			Position = UDim2.fromOffset(14, (SPACING.TopBar - 28) / 2),
+			Size = UDim2.fromOffset(28, 28),
+			ScaleType = Enum.ScaleType.Fit,
+			ZIndex = 5,
+		}, topBar)
+		addCorner(windowIcon, RADIUS.Inner)
+		titleLeft = 52
+	end
+
+	create(
+		"TextLabel",
+		merge(textProps(TEXT.Title, Vertex.Theme.Text, Vertex.Fonts.Bold), {
+			Name = "Title",
+			Text = options.Title or "Vertex",
+			Position = UDim2.fromOffset(titleLeft, options.Subtitle and 8 or 0),
+			Size = UDim2.new(0, 320, options.Subtitle and 0 or 1, options.Subtitle and 22 or 0),
+			ZIndex = 5,
+		}),
+		topBar
+	)
+
+	if options.Subtitle then
+		create(
+			"TextLabel",
+			merge(textProps(TEXT.Small, Vertex.Theme.TextMuted, Vertex.Fonts.Medium), {
+				Name = "Subtitle",
+				Text = options.Subtitle,
+				Position = UDim2.fromOffset(titleLeft, 28),
+				Size = UDim2.new(0, 320, 0, 16),
+				ZIndex = 5,
+			}),
+			topBar
+		)
+	end
+
+	-- Top-right window buttons. Right-most is close (unloads the whole GUI),
+	-- to its left is minimise (hides the window, same as the toggle key).
+	local function makeTopButton(name, iconName, fallback, xOffset)
+		local button = create("TextButton", {
+			Name = name,
+			AnchorPoint = Vector2.new(1, 0.5),
+			Position = UDim2.new(1, xOffset, 0.5, 0),
+			Size = UDim2.fromOffset(30, 30),
+			BackgroundColor3 = Vertex.Theme.SurfaceRaised,
+			BackgroundTransparency = 1,
+			BorderSizePixel = 0,
+			Text = "",
+			AutoButtonColor = false,
+			ZIndex = 5,
+		}, topBar)
+		addCorner(button, RADIUS.Inner)
+		local icon = makeGlyph(button, iconName, fallback, 18, Vertex.Theme.TextMuted)
+		icon.AnchorPoint = Vector2.new(0.5, 0.5)
+		icon.Position = UDim2.fromScale(0.5, 0.5)
+		return button, icon
+	end
+
+	local closeButton, closeIcon = makeTopButton("Close", "x", "✕", -12)
+	local minimiseButton, minimiseIcon = makeTopButton("Minimise", "minus", "—", -48)
+
+	----------------------------------------------------------------
+	-- Sidebar + content (parented straight to main so their window-facing
+	-- corners aren't squared by a clipping parent)
+	----------------------------------------------------------------
+	local sidebar = create("Frame", {
+		Name = "Sidebar",
+		BackgroundColor3 = Vertex.Theme.Surface,
+		BorderSizePixel = 0,
+		Position = UDim2.fromOffset(0, SPACING.TopBar),
+		Size = UDim2.new(0, SPACING.SideW, 1, -SPACING.TopBar),
+		ZIndex = 3,
+	}, main)
+	-- Round only the bottom-left (window) corner; square the interior edges.
+	addCorner(sidebar, RADIUS.Window)
+	cornerFill(sidebar, Vector2.new(0, 0), UDim2.new(0, 0, 0, 0), UDim2.new(1, 0, 0, RADIUS.Window), 3)
+	cornerFill(sidebar, Vector2.new(1, 0), UDim2.new(1, 0, 0, 0), UDim2.new(0, RADIUS.Window, 1, 0), 3)
+
+	create("Frame", {
+		Name = "Divider",
+		BackgroundColor3 = STROKE_COLOR,
+		BackgroundTransparency = STROKE_SOFT,
+		BorderSizePixel = 0,
+		Position = UDim2.new(1, -1, 0, 0),
+		Size = UDim2.new(0, 1, 1, 0),
+		ZIndex = 4,
+	}, sidebar)
+
+	local tabList = create("ScrollingFrame", {
+		Name = "Tabs",
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		Position = UDim2.fromOffset(10, 12),
+		Size = UDim2.new(1, -20, 1, -20),
+		CanvasSize = UDim2.new(),
+		AutomaticCanvasSize = Enum.AutomaticSize.Y,
+		ScrollBarThickness = 0,
+		ScrollBarImageTransparency = 1,
+		VerticalScrollBarInset = Enum.ScrollBarInset.None,
+		HorizontalScrollBarInset = Enum.ScrollBarInset.None,
+		ScrollingDirection = Enum.ScrollingDirection.Y,
+		ZIndex = 4,
+	}, sidebar)
+	create("UIListLayout", {
+		Padding = UDim.new(0, 5),
+		SortOrder = Enum.SortOrder.LayoutOrder,
+	}, tabList)
+
+	local content = create("Frame", {
+		Name = "Content",
+		BackgroundTransparency = 1,
+		Position = UDim2.fromOffset(SPACING.SideW, SPACING.TopBar),
+		Size = UDim2.new(1, -SPACING.SideW, 1, -SPACING.TopBar),
+		ClipsDescendants = true,
+		ZIndex = 3,
+	}, main)
+
+	local window = {
+		ScreenGui = screenGui,
+		Instance = main,
+		TopBar = topBar,
+		Sidebar = sidebar,
+		TabList = tabList,
+		Content = content,
+		Tabs = {},
+		OpenDropdowns = {},
+		CurrentTab = nil,
+		Visible = true,
+		Minimised = false,
+		ExpandedHeight = (options.Size or UDim2.fromOffset(760, 500)).Y.Offset,
+		ToggleKey = options.ToggleKey or Enum.KeyCode.RightShift,
+		_visAnimating = false,
+	}
+	Vertex.MenuKeybind = window.ToggleKey
+
+	makeDraggable(topBar, main)
+
+	----------------------------------------------------------------
+	-- Floating reopen chip (top-center). Lives on its own ScreenGui so it
+	-- still works after the window ScreenGui is disabled on hide.
+	----------------------------------------------------------------
+	local reopenGui = create("ScreenGui", {
+		Name = "VertexReopen",
+		ResetOnSpawn = false,
+		IgnoreGuiInset = true,
+		ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+		DisplayOrder = 115,
+		Enabled = true,
+	}, getGuiParent())
+	if syn and type(syn.protect_gui) == "function" then
+		pcall(syn.protect_gui, reopenGui)
+	end
+	window.ReopenGui = reopenGui
+
+	local reopenChip = create("TextButton", {
+		Name = "ReopenChip",
+		Visible = false,
+		AutoButtonColor = false,
+		Text = "",
+		BackgroundColor3 = Vertex.Theme.Surface,
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		AutomaticSize = Enum.AutomaticSize.XY,
+		AnchorPoint = Vector2.new(0.5, 0),
+		Position = UDim2.new(0.5, 0, 0, 16),
+		Active = true,
+		ZIndex = 80,
+	}, reopenGui)
+	addCorner(reopenChip, RADIUS.Pill)
+	local reopenShadow = addDropShadow(reopenChip, {
+		Blur = 36,
+		YOffset = 8,
+		Spread = 10,
+		Transparency = 0.28,
+	})
+	local reopenShadowRest = 0.28
+	local reopenScale = create("UIScale", { Scale = 0.92 }, reopenChip)
+	addPadding(reopenChip, 8, 14, 8, 12)
+	create("UIListLayout", {
+		FillDirection = Enum.FillDirection.Horizontal,
+		VerticalAlignment = Enum.VerticalAlignment.Center,
+		Padding = UDim.new(0, 8),
+		SortOrder = Enum.SortOrder.LayoutOrder,
+	}, reopenChip)
+
+	if iconSource and iconSource ~= "" then
+		local chipIcon = create("ImageLabel", {
+			Name = "Icon",
+			BackgroundTransparency = 1,
+			Image = tostring(iconSource),
+			ImageTransparency = 1,
+			Size = UDim2.fromOffset(20, 20),
+			ScaleType = Enum.ScaleType.Fit,
+			ZIndex = 81,
+			LayoutOrder = 1,
+		}, reopenChip)
+		addCorner(chipIcon, RADIUS.Inner)
+	end
+
+	local reopenLabel = create(
+		"TextLabel",
+		merge(textProps(TEXT.Label, Vertex.Theme.Text, Vertex.Fonts.SemiBold), {
+			Name = "Label",
+			Text = options.Title or "Vertex",
+			TextTransparency = 1,
+			AutomaticSize = Enum.AutomaticSize.XY,
+			ZIndex = 81,
+			LayoutOrder = 2,
+		}),
+		reopenChip
+	)
+
+	local function setReopenShadowAlpha(alpha, animate, speed)
+		if not reopenShadow then
+			return
+		end
+		if reopenShadow.ClassName == "UIShadow" then
+			if animate then
+				motion(reopenShadow, "Transparency", alpha, speed)
+			else
+				setNow(reopenShadow, "Transparency", alpha)
+			end
+		elseif reopenShadow:IsA("ImageLabel") then
+			if animate then
+				motion(reopenShadow, "ImageTransparency", alpha, speed)
+			else
+				setNow(reopenShadow, "ImageTransparency", alpha)
+			end
+		end
+	end
+
+	local reopenShown = false
+	local function setReopenChipVisible(show)
+		show = show == true
+		if show == reopenShown then
+			return
+		end
+		reopenShown = show
+		if show then
+			reopenChip.Visible = true
+			setNow(reopenScale, "Scale", 0.9)
+			setNow(reopenChip, "BackgroundTransparency", 1)
+			setReopenShadowAlpha(1, false)
+			setNow(reopenLabel, "TextTransparency", 1)
+			for _, child in ipairs(reopenChip:GetChildren()) do
+				if child:IsA("ImageLabel") and child.Name ~= "DropShadow" then
+					setNow(child, "ImageTransparency", 1)
+				end
+			end
+			motion(reopenScale, "Scale", 1, 16)
+			motion(reopenChip, "BackgroundTransparency", 0.06, 16)
+			setReopenShadowAlpha(reopenShadowRest, true, 16)
+			motion(reopenLabel, "TextTransparency", 0, 16)
+			for _, child in ipairs(reopenChip:GetChildren()) do
+				if child:IsA("ImageLabel") and child.Name ~= "DropShadow" then
+					motion(child, "ImageTransparency", 0, 16)
+				end
+			end
+		else
+			motion(reopenScale, "Scale", 0.92, 18)
+			motion(reopenChip, "BackgroundTransparency", 1, 18)
+			setReopenShadowAlpha(1, true, 18)
+			motion(reopenLabel, "TextTransparency", 1, 18)
+			for _, child in ipairs(reopenChip:GetChildren()) do
+				if child:IsA("ImageLabel") and child.Name ~= "DropShadow" then
+					motion(child, "ImageTransparency", 1, 18)
+				end
+			end
+			task.delay(0.2, function()
+				if not reopenShown and reopenChip.Parent then
+					reopenChip.Visible = false
+				end
+			end)
+		end
+	end
+
+	-- Drag without treating a drag as a reopen tap.
+	local chipDragMoved = false
+	do
+		local dragging = false
+		local dragStart
+		local startPosition
+		connect(reopenChip.InputBegan, function(input)
+			if
+				input.UserInputType == Enum.UserInputType.MouseButton1
+				or input.UserInputType == Enum.UserInputType.Touch
+			then
+				dragging = true
+				chipDragMoved = false
+				dragStart = input.Position
+				setNow(reopenChip, "Position", reopenChip.Position)
+				startPosition = reopenChip.Position
+				local changed
+				changed = input.Changed:Connect(function()
+					if input.UserInputState == Enum.UserInputState.End then
+						dragging = false
+						changed:Disconnect()
+					end
+				end)
+			end
+		end)
+		connect(UserInputService.InputChanged, function(input)
+			if
+				not dragging
+				or not dragStart
+				or (
+					input.UserInputType ~= Enum.UserInputType.MouseMovement
+					and input.UserInputType ~= Enum.UserInputType.Touch
+				)
+			then
+				return
+			end
+			local delta = input.Position - dragStart
+			if delta.Magnitude > 6 then
+				chipDragMoved = true
+			end
+			setNow(
+				reopenChip,
+				"Position",
+				UDim2.new(
+					startPosition.X.Scale,
+					startPosition.X.Offset + delta.X,
+					startPosition.Y.Scale,
+					startPosition.Y.Offset + delta.Y
+				)
+			)
+		end)
+	end
+
+	connect(reopenChip.MouseButton1Click, function()
+		if chipDragMoved or window._closing then
+			return
+		end
+		window:SetVisible(true)
+	end)
+
+	function window:SetVisible(value)
+		value = value == true
+		if self._closing or value == self.Visible then
+			return
+		end
+
+		local settled = not self._visAnimating
+		self._visAnimating = true
+		self.Visible = value
+		self._visGen = (self._visGen or 0) + 1
+		local gen = self._visGen
+
+		if value then
+			setReopenChipVisible(false)
+			screenGui.Enabled = true
+
+			-- First open captures construction opacities; later opens reuse the
+			-- last settled snapshot (refreshed below once fully shown).
+			if not self._restAlpha then
+				self._restAlpha = snapshotAlpha(main)
+			end
+			local alpha = self._restAlpha
+			local rest = self._restPosition or main.Position
+
+			setNow(uiScale, "Scale", 0.9)
+			setNow(main, "Position", rest - UDim2.fromOffset(0, 22))
+			setAlpha(alpha, false)
+
+			motion(uiScale, "Scale", 1, 13)
+			motion(main, "Position", rest, 15)
+			fadeAlpha(alpha, true, 14)
+
+			task.delay(0.34, function()
+				if self.Visible and gen == self._visGen then
+					self._visAnimating = false
+					-- Include tabs/controls that were added after the first open.
+					self._restAlpha = snapshotAlpha(main)
+					self._restPosition = main.Position
+				end
+			end)
+		else
+			clearTooltips()
+			setReopenChipVisible(false)
+
+			-- When settled, refresh so every live control is in the restore list.
+			if settled or not self._restAlpha then
+				self._restAlpha = snapshotAlpha(main)
+			end
+
+			local rest = main.Position
+			if self._restPosition and (main.Position.Y.Offset - self._restPosition.Y.Offset) > 10 then
+				rest = self._restPosition
+			else
+				self._restPosition = rest
+			end
+
+			motion(uiScale, "Scale", 0.9, 19)
+			motion(main, "Position", rest + UDim2.fromOffset(0, 22), 19)
+			-- Fade the whole live tree, not a stale first-open snapshot.
+			fadeOutTree(main, 20)
+
+			task.delay(0.34, function()
+				if not self.Visible and gen == self._visGen then
+					screenGui.Enabled = false
+					setNow(uiScale, "Scale", 1)
+					setNow(main, "Position", rest)
+					self._visAnimating = false
+					setReopenChipVisible(true)
+				end
+			end)
+		end
+	end
+
+	function window:Toggle()
+		self:SetVisible(not self.Visible)
+	end
+
+	-- Nexonix-style aliases.
+	function window:SetOpen(value)
+		self:SetVisible(value)
+	end
+
+	function window:Center()
+		setNow(main, "Position", UDim2.fromScale(0.5, 0.5))
+	end
+
+	function window:Page(pageOptions)
+		return self:AddTab(pageOptions)
+	end
+
+	function window:Watermark(params)
+		return Vertex:Watermark(params)
+	end
+
+	function window:KeybindList(params)
+		params = params or {}
+		params.Window = self
+		local list = Vertex:KeybindList(params)
+		self.KeybindList = list
+		return list
+	end
+
+	function window:SetMinimised(state)
+		self.Minimised = state == true
+		if self.Minimised then
+			-- Hide the body immediately (main no longer clips) then collapse.
+			sidebar.Visible = false
+			content.Visible = false
+			motion(main, "Size", UDim2.new(main.Size.X.Scale, main.Size.X.Offset, 0, SPACING.TopBar), 16)
+		else
+			motion(main, "Size", UDim2.new(main.Size.X.Scale, main.Size.X.Offset, 0, self.ExpandedHeight), 16)
+			-- Reveal the body once the window has grown back to full height.
+			task.delay(0.28, function()
+				if not self.Minimised then
+					sidebar.Visible = true
+					content.Visible = true
+				end
+			end)
+		end
+	end
+
+	function window:Minimise()
+		self:SetMinimised(not self.Minimised)
+	end
+
+	-- Animated unload: fade + slide the window out, then destroy everything.
+	function window:Close()
+		if self._closing then
+			return
+		end
+		self._closing = true
+		setReopenChipVisible(false)
+
+		local rest = main.Position
+		setNow(main, "Position", rest)
+		motion(uiScale, "Scale", 0.9, 18)
+		motion(main, "Position", rest + UDim2.fromOffset(0, 24), 18)
+		fadeOutTree(main, 20)
+
+		-- Fade floating chrome (watermark + keybind list + live notifications) with the window.
+		for _, watermark in ipairs(Vertex.Watermarks) do
+			if watermark.Instance and watermark.Instance.Parent then
+				local mark = watermark.Instance
+				local markScale = mark:FindFirstChildOfClass("UIScale")
+				if not markScale then
+					markScale = create("UIScale", { Scale = 1 }, mark)
+				end
+				motion(markScale, "Scale", 0.94, 18)
+				motion(mark, "Position", mark.Position + UDim2.fromOffset(0, -10), 18)
+				fadeOutTree(mark, 20)
+				if watermark._conn then
+					watermark._conn:Disconnect()
+					watermark._conn = nil
+				end
+			end
+		end
+
+		for _, keyList in ipairs(Vertex.KeybindLists) do
+			if keyList and keyList.FadeOut then
+				keyList:FadeOut(18)
+			elseif keyList and keyList.Instance and keyList.Instance.Parent then
+				fadeOutTree(keyList.Instance, 18)
+			end
+		end
+
+		if Vertex._notifyGui and Vertex._notifyGui.Parent then
+			local holder = Vertex._notifyGui:FindFirstChild("Notifications")
+			if holder then
+				for _, notif in ipairs(holder:GetChildren()) do
+					if notif:IsA("GuiObject") then
+						local notifScale = notif:FindFirstChildOfClass("UIScale")
+						fadeOutTree(notif, 20)
+						motion(notif, "Position", UDim2.fromOffset(56, 0), 18)
+						if notifScale then
+							motion(notifScale, "Scale", 0.92, 18)
+						end
+					end
+				end
+			end
+		end
+
+		task.delay(0.34, function()
+			self:Destroy()
+		end)
+	end
+
+	function window:Destroy()
+		clearTooltips()
+		for index, item in ipairs(Vertex.Windows) do
+			if item == self then
+				table.remove(Vertex.Windows, index)
+				break
+			end
+		end
+		-- X / Close unloads floating widgets too (watermark + notifications).
+		for _, watermark in ipairs(Vertex.Watermarks) do
+			if watermark._conn then
+				watermark._conn:Disconnect()
+				watermark._conn = nil
+			end
+			if watermark.Instance then
+				watermark.Instance:Destroy()
+			end
+		end
+		table.clear(Vertex.Watermarks)
+		if Vertex._watermarkGui then
+			Vertex._watermarkGui:Destroy()
+			Vertex._watermarkGui = nil
+		end
+		table.clear(Vertex.KeybindLists)
+		Vertex.KeyList = nil
+		if Vertex._keybindListGui then
+			Vertex._keybindListGui:Destroy()
+			Vertex._keybindListGui = nil
+		end
+		if Vertex._notifyGui then
+			Vertex._notifyGui:Destroy()
+			Vertex._notifyGui = nil
+		end
+		if reopenGui then
+			reopenGui:Destroy()
+		end
+		screenGui:Destroy()
+	end
+
+	-- Close confirm: "Are you sure?" before fully unloading.
+	local confirmOpen = false
+	local function showCloseConfirm()
+		if confirmOpen or window._closing then
+			return
+		end
+		confirmOpen = true
+
+		local overlay = create("Frame", {
+			Name = "CloseConfirm",
+			BackgroundColor3 = Color3.new(0, 0, 0),
+			BackgroundTransparency = 1,
+			BorderSizePixel = 0,
+			Size = UDim2.fromScale(1, 1),
+			Active = true,
+			ZIndex = 200,
+		}, screenGui)
+
+		local card = create("Frame", {
+			Name = "Card",
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Position = UDim2.fromScale(0.5, 0.5),
+			Size = UDim2.fromOffset(320, 148),
+			BackgroundColor3 = Vertex.Theme.SurfaceRaised,
+			BackgroundTransparency = 1,
+			BorderSizePixel = 0,
+			ZIndex = 201,
+		}, overlay)
+		addCorner(card, RADIUS.Card)
+		local cardShadow = addDropShadow(card, {
+			Blur = 40,
+			YOffset = 10,
+			Spread = 12,
+			Transparency = 0.28,
+		})
+		local cardShadowRest = 0.28
+		local cardScale = create("UIScale", { Scale = 0.94 }, card)
+		addPadding(card, 18, 18, 18, 18)
+
+		local function setCardShadowAlpha(alpha, animate, speed)
+			if not cardShadow then
+				return
+			end
+			if cardShadow.ClassName == "UIShadow" then
+				if animate then
+					motion(cardShadow, "Transparency", alpha, speed)
+				else
+					setNow(cardShadow, "Transparency", alpha)
+				end
+			elseif cardShadow:IsA("ImageLabel") then
+				if animate then
+					motion(cardShadow, "ImageTransparency", alpha, speed)
+				else
+					setNow(cardShadow, "ImageTransparency", alpha)
+				end
+			end
+		end
+
+		local title = create(
+			"TextLabel",
+			merge(textProps(TEXT.Title, Vertex.Theme.Text, Vertex.Fonts.Bold), {
+				Text = "Are you sure?",
+				TextTransparency = 1,
+				Size = UDim2.new(1, 0, 0, 22),
+				ZIndex = 202,
+			}),
+			card
+		)
+		local body = create(
+			"TextLabel",
+			merge(textProps(TEXT.Small, Vertex.Theme.TextMuted, Vertex.Fonts.Medium), {
+				Text = "This will fully unload the GUI.",
+				TextTransparency = 1,
+				Position = UDim2.fromOffset(0, 28),
+				Size = UDim2.new(1, 0, 0, 36),
+				TextWrapped = true,
+				TextYAlignment = Enum.TextYAlignment.Top,
+				ZIndex = 202,
+			}),
+			card
+		)
+
+		local actions = create("Frame", {
+			BackgroundTransparency = 1,
+			Position = UDim2.fromOffset(0, 78),
+			Size = UDim2.new(1, 0, 0, 34),
+			ZIndex = 202,
+		}, card)
+		create("UIListLayout", {
+			FillDirection = Enum.FillDirection.Horizontal,
+			HorizontalAlignment = Enum.HorizontalAlignment.Right,
+			Padding = UDim.new(0, 8),
+			SortOrder = Enum.SortOrder.LayoutOrder,
+		}, actions)
+
+		local function makeAction(name, order, bg, textColor)
+			local btn = create(
+				"TextButton",
+				merge(textProps(TEXT.Small, textColor, Vertex.Fonts.Bold), {
+					Name = name,
+					Text = name,
+					BackgroundColor3 = bg,
+					BackgroundTransparency = 1,
+					TextTransparency = 1,
+					TextXAlignment = Enum.TextXAlignment.Center,
+					BorderSizePixel = 0,
+					Size = UDim2.fromOffset(name == "Unload" and 88 or 84, 34),
+					AutoButtonColor = false,
+					ZIndex = 203,
+					LayoutOrder = order,
+				}),
+				actions
+			)
+			addCorner(btn, RADIUS.Inner)
+			return btn
+		end
+
+		local cancelBtn = makeAction("Cancel", 1, Vertex.Theme.SurfaceHover, Vertex.Theme.Text)
+		local unloadBtn = makeAction("Unload", 2, Vertex.Theme.Danger, Vertex.Theme.Text)
+
+		local function dismiss()
+			if not confirmOpen then
+				return
+			end
+			confirmOpen = false
+			motion(overlay, "BackgroundTransparency", 1, 20)
+			motion(card, "BackgroundTransparency", 1, 20)
+			setCardShadowAlpha(1, true, 20)
+			motion(cardScale, "Scale", 0.94, 20)
+			motion(title, "TextTransparency", 1, 20)
+			motion(body, "TextTransparency", 1, 20)
+			motion(cancelBtn, "BackgroundTransparency", 1, 20)
+			motion(cancelBtn, "TextTransparency", 1, 20)
+			motion(unloadBtn, "BackgroundTransparency", 1, 20)
+			motion(unloadBtn, "TextTransparency", 1, 20)
+			task.delay(0.2, function()
+				if overlay.Parent then
+					overlay:Destroy()
+				end
+			end)
+		end
+
+		connect(cancelBtn.MouseButton1Click, dismiss)
+		connect(overlay.InputBegan, function(input)
+			if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+				-- Only dismiss when clicking the dim area, not the card.
+				local pos = input.Position
+				local cPos, cSize = card.AbsolutePosition, card.AbsoluteSize
+				local overCard = pos.X >= cPos.X
+					and pos.X <= cPos.X + cSize.X
+					and pos.Y >= cPos.Y
+					and pos.Y <= cPos.Y + cSize.Y
+				if not overCard then
+					dismiss()
+				end
+			end
+		end)
+		connect(unloadBtn.MouseButton1Click, function()
+			confirmOpen = false
+			if overlay.Parent then
+				overlay:Destroy()
+			end
+			window:Close()
+		end)
+
+		-- Enter.
+		setCardShadowAlpha(1, false)
+		motion(overlay, "BackgroundTransparency", 0.45, 16)
+		motion(card, "BackgroundTransparency", 0, 16)
+		setCardShadowAlpha(cardShadowRest, true, 16)
+		motion(cardScale, "Scale", 1, 16)
+		motion(title, "TextTransparency", 0, 16)
+		motion(body, "TextTransparency", 0, 16)
+		motion(cancelBtn, "BackgroundTransparency", 0, 16)
+		motion(cancelBtn, "TextTransparency", 0, 16)
+		motion(unloadBtn, "BackgroundTransparency", 0, 16)
+		motion(unloadBtn, "TextTransparency", 0, 16)
+	end
+
+	-- Close button: ask first, then unload the whole GUI.
+	connect(closeButton.MouseButton1Click, function()
+		showCloseConfirm()
+	end)
+	connect(closeButton.MouseEnter, function()
+		motion(closeButton, "BackgroundTransparency", 0, 20)
+		paintGlyph(closeIcon, Vertex.Theme.Danger)
+	end)
+	connect(closeButton.MouseLeave, function()
+		motion(closeButton, "BackgroundTransparency", 1, 20)
+		paintGlyph(closeIcon, Vertex.Theme.TextMuted)
+	end)
+
+	-- Minimise button: hide the window (same as pressing the toggle key).
+	connect(minimiseButton.MouseButton1Click, function()
+		window:SetVisible(false)
+	end)
+	connect(minimiseButton.MouseEnter, function()
+		motion(minimiseButton, "BackgroundTransparency", 0, 20)
+		paintGlyph(minimiseIcon, Vertex.Theme.Text)
+	end)
+	connect(minimiseButton.MouseLeave, function()
+		motion(minimiseButton, "BackgroundTransparency", 1, 20)
+		paintGlyph(minimiseIcon, Vertex.Theme.TextMuted)
+	end)
+
+	connect(UserInputService.InputBegan, function(input, processed)
+		if not processed and input.KeyCode == window.ToggleKey then
+			window:Toggle()
+		end
+	end)
+
+	-- Entrance animation: reuse the open transition (drop-in + scale + fade).
+	window.Visible = false
+	window:SetVisible(true)
+
+	function window:AddTab(tabOptions)
+		tabOptions = tabOptions or {}
+		local tabName = tabOptions.Name or "Tab"
+
+		local tabButton = create("TextButton", {
+			Name = tabName,
+			Text = "",
+			BackgroundColor3 = Vertex.Theme.SurfaceRaised,
+			BackgroundTransparency = 1,
+			BorderSizePixel = 0,
+			Size = UDim2.new(1, 0, 0, 38),
+			AutoButtonColor = false,
+			ZIndex = 3,
+		}, tabList)
+		addCorner(tabButton, RADIUS.Control)
+
+		local indicator = create("Frame", {
+			Name = "Indicator",
+			AnchorPoint = Vector2.new(0, 0.5),
+			Position = UDim2.new(0, 8, 0.5, 0),
+			Size = UDim2.fromOffset(3, 16),
+			BackgroundColor3 = Vertex.Theme.Accent,
+			BackgroundTransparency = 1,
+			BorderSizePixel = 0,
+			ZIndex = 4,
+		}, tabButton)
+		addCorner(indicator, RADIUS.Pill)
+		watchTheme(function()
+			if not indicator.Parent then
+				return false
+			end
+			motion(indicator, "BackgroundColor3", Vertex.Theme.Accent, 18)
+		end)
+
+		local textOffset = 20
+		local tabIcon
+		if tabOptions.Icon and getIcon(tabOptions.Icon) then
+			tabIcon = makeGlyph(tabButton, tabOptions.Icon, nil, 17, Vertex.Theme.TextMuted)
+			tabIcon.AnchorPoint = Vector2.new(0, 0.5)
+			tabIcon.Position = UDim2.new(0, 20, 0.5, 0)
+			textOffset = 46
+		end
+
+		local tabLabel = create(
+			"TextLabel",
+			merge(textProps(TEXT.Label, Vertex.Theme.TextMuted, Vertex.Fonts.SemiBold), {
+				Text = tabName,
+				Position = UDim2.fromOffset(textOffset, 0),
+				Size = UDim2.new(1, -textOffset - 10, 1, 0),
+				TextTruncate = Enum.TextTruncate.AtEnd,
+				ZIndex = 4,
+			}),
+			tabButton
+		)
+
+		local page = create("ScrollingFrame", {
+			Name = tabName,
+			Visible = false,
+			BackgroundTransparency = 1,
+			BorderSizePixel = 0,
+			Position = UDim2.fromOffset(SPACING.Window, SPACING.Window),
+			Size = UDim2.new(1, -SPACING.Window * 2, 1, -SPACING.Window * 2),
+			CanvasSize = UDim2.new(),
+			AutomaticCanvasSize = Enum.AutomaticSize.Y,
+			ScrollBarThickness = 0,
+			ScrollBarImageTransparency = 1,
+			VerticalScrollBarInset = Enum.ScrollBarInset.None,
+			HorizontalScrollBarInset = Enum.ScrollBarInset.None,
+			ScrollingDirection = Enum.ScrollingDirection.Y,
+			ZIndex = 3,
+		}, content)
+		-- Inset content from the ScrollingFrame clip so section corners/strokes
+		-- render fully (no chopped-off left edge, no squared top corners).
+		addPadding(page, 4, 10, 10, 8)
+		create("UIListLayout", {
+			Padding = UDim.new(0, SPACING.Gap),
+			SortOrder = Enum.SortOrder.LayoutOrder,
+		}, page)
+
+		local tab = {
+			Name = tabName,
+			Button = tabButton,
+			Label = tabLabel,
+			Icon = tabIcon,
+			Indicator = indicator,
+			Page = page,
+			Sections = {},
+			Window = window,
+		}
+
+		function tab:Select()
+			if window.CurrentTab == self then
+				return
+			end
+			for _, other in ipairs(window.Tabs) do
+				local selected = other == self
+				if selected then
+					-- Slide the page up a touch and fade it in.
+					other.Page.Visible = true
+					other.Page.Position = UDim2.fromOffset(SPACING.Window, SPACING.Window + 14)
+					setNow(other.Page, "CanvasPosition", Vector2.new())
+					motion(other.Page, "Position", UDim2.fromOffset(SPACING.Window, SPACING.Window), 16)
+				else
+					other.Page.Visible = false
+				end
+				motion(other.Button, "BackgroundTransparency", selected and 0 or 1, 18)
+				motion(other.Label, "TextColor3", selected and Vertex.Theme.Text or Vertex.Theme.TextMuted, 18)
+				motion(other.Indicator, "BackgroundTransparency", selected and 0 or 1, 18)
+				other.Label.FontFace = selected and Vertex.Fonts.Bold or Vertex.Fonts.SemiBold
+				if other.Icon then
+					paintGlyph(other.Icon, selected and Vertex.Theme.Text or Vertex.Theme.TextMuted)
+				end
+			end
+			window.CurrentTab = self
+		end
+
+		function tab:Turn()
+			self:Select()
+		end
+
+		function tab:Section(sectionOptions)
+			return self:AddSection(sectionOptions)
+		end
+
+		connect(tabButton.MouseButton1Click, function()
+			tab:Select()
+		end)
+		connect(tabButton.MouseEnter, function()
+			if window.CurrentTab ~= tab then
+				motion(tabButton, "BackgroundTransparency", 0.45, 20)
+			end
+		end)
+		connect(tabButton.MouseLeave, function()
+			if window.CurrentTab ~= tab then
+				motion(tabButton, "BackgroundTransparency", 1, 20)
+			end
+		end)
+
+		function tab:AddSection(sectionOptions)
+			sectionOptions = sectionOptions or {}
+			local sectionFrame = create("Frame", {
+				Name = sectionOptions.Name or "Section",
+				BackgroundColor3 = Vertex.Theme.Surface,
+				BorderSizePixel = 0,
+				Size = UDim2.new(1, 0, 0, 0),
+				AutomaticSize = Enum.AutomaticSize.Y,
+				ZIndex = 3,
+			}, page)
+			addCorner(sectionFrame, RADIUS.Card)
+			addPadding(sectionFrame, SPACING.Section, SPACING.Section, SPACING.Section, SPACING.Section)
+			create("UIListLayout", {
+				Padding = UDim.new(0, 12),
+				SortOrder = Enum.SortOrder.LayoutOrder,
+			}, sectionFrame)
+
+			create(
+				"TextLabel",
+				merge(textProps(TEXT.Section, Vertex.Theme.TextMuted, Vertex.Fonts.Bold), {
+					Name = "SectionTitle",
+					Text = sectionOptions.Name or "Section",
+					Size = UDim2.new(1, 0, 0, 18),
+					LayoutOrder = 0,
+					ZIndex = 3,
+				}),
+				sectionFrame
+			)
+
+			local sectionContainer = create("Frame", {
+				Name = "Container",
+				BackgroundTransparency = 1,
+				Size = UDim2.new(1, 0, 0, 0),
+				AutomaticSize = Enum.AutomaticSize.Y,
+				LayoutOrder = 1,
+				ZIndex = 3,
+			}, sectionFrame)
+			create("UIListLayout", {
+				Padding = UDim.new(0, 8),
+				SortOrder = Enum.SortOrder.LayoutOrder,
+			}, sectionContainer)
+
+			local section = {
+				Name = sectionOptions.Name or "Section",
+				Instance = sectionFrame,
+				Container = sectionContainer,
+				Tab = tab,
+				Items = {},
+			}
+
+			-- Nested color swatch + HSV popover attached to a control row.
+			local function attachColorPicker(control, data)
+				data = data or {}
+				local flag = data.Flag or HttpService:GenerateGUID(false)
+				local color = data.Default or Vertex.Theme.Accent
+				local alpha = tonumber(data.Alpha) or 1
+				local rightPad = control._nestOffset or 14
+				control._nestOffset = rightPad + 30
+				control.Instance.ClipsDescendants = false
+
+				local function screenGuiOf(instance)
+					local current = instance
+					while current do
+						if current:IsA("ScreenGui") then
+							return current
+						end
+						current = current.Parent
+					end
+					return getGuiParent()
+				end
+
+				local swatch = create("TextButton", {
+					Name = "ColorSwatch",
+					AnchorPoint = Vector2.new(1, 0.5),
+					Position = UDim2.new(1, -rightPad, 0.5, 0),
+					Size = UDim2.fromOffset(22, 22),
+					BackgroundColor3 = color,
+					BorderSizePixel = 0,
+					Text = "",
+					AutoButtonColor = false,
+					ZIndex = 5,
+				}, control.Instance)
+				addCorner(swatch, RADIUS.Inner)
+				addStroke(swatch, FIELD_STROKE, nil, FIELD_STROKE_THICKNESS)
+
+				-- Float on ScreenGui so the page ScrollingFrame doesn't clip it.
+				local picker = create("Frame", {
+					Name = "ColorPicker",
+					Visible = false,
+					BackgroundColor3 = Vertex.Theme.SurfaceRaised,
+					BackgroundTransparency = 1,
+					BorderSizePixel = 0,
+					AnchorPoint = Vector2.new(1, 0),
+					Size = UDim2.fromOffset(196, 150),
+					ZIndex = 120,
+				}, screenGuiOf(control.Instance))
+				addCorner(picker, RADIUS.Card)
+				local pickerShadow = addDropShadow(picker, {
+					Blur = 40,
+					YOffset = 10,
+					Spread = 12,
+					Transparency = 0.28,
+				})
+				local pickerShadowRest = 0.28
+				addPadding(picker, 10, 10, 10, 10)
+				local pickerScale = create("UIScale", { Scale = 0.94 }, picker)
+				create("UIListLayout", {
+					Padding = UDim.new(0, 10),
+					SortOrder = Enum.SortOrder.LayoutOrder,
+				}, picker)
+
+				local function setPickerShadowAlpha(alpha, animate, speed)
+					if not pickerShadow then
+						return
+					end
+					if pickerShadow.ClassName == "UIShadow" then
+						if animate then
+							motion(pickerShadow, "Transparency", alpha, speed)
+						else
+							setNow(pickerShadow, "Transparency", alpha)
+						end
+					elseif pickerShadow:IsA("ImageLabel") then
+						if animate then
+							motion(pickerShadow, "ImageTransparency", alpha, speed)
+						else
+							setNow(pickerShadow, "ImageTransparency", alpha)
+						end
+					end
+				end
+
+				local hue, sat, val = Color3.toHSV(color)
+				local satVal = create("ImageButton", {
+					Name = "SatVal",
+					BackgroundColor3 = Color3.fromHSV(hue, 1, 1),
+					BackgroundTransparency = 1,
+					BorderSizePixel = 0,
+					Size = UDim2.new(1, 0, 0, 108),
+					Image = "rbxassetid://4155801252",
+					ImageTransparency = 1,
+					AutoButtonColor = false,
+					ClipsDescendants = false,
+					ZIndex = 121,
+					LayoutOrder = 1,
+				}, picker)
+				addCorner(satVal, RADIUS.Inner)
+
+				-- SV picker ring — sits on the selected saturation/value.
+				local svCursor = create("Frame", {
+					Name = "SVCursor",
+					AnchorPoint = Vector2.new(0.5, 0.5),
+					Size = UDim2.fromOffset(14, 14),
+					BackgroundColor3 = Color3.new(1, 1, 1),
+					BackgroundTransparency = 1,
+					BorderSizePixel = 0,
+					ZIndex = 123,
+				}, satVal)
+				addCorner(svCursor, 100)
+				local svCursorStroke = addStroke(svCursor, 1, Color3.new(1, 1, 1), 2)
+
+				local hueBar = create("TextButton", {
+					Name = "Hue",
+					Size = UDim2.new(1, 0, 0, 12),
+					BackgroundColor3 = Color3.new(1, 1, 1),
+					BackgroundTransparency = 1,
+					BorderSizePixel = 0,
+					Text = "",
+					AutoButtonColor = false,
+					ClipsDescendants = false,
+					ZIndex = 121,
+					LayoutOrder = 2,
+				}, picker)
+				addCorner(hueBar, RADIUS.Pill)
+				create("UIGradient", {
+					Color = ColorSequence.new({
+						ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 0, 0)),
+						ColorSequenceKeypoint.new(0.17, Color3.fromRGB(255, 255, 0)),
+						ColorSequenceKeypoint.new(0.33, Color3.fromRGB(0, 255, 0)),
+						ColorSequenceKeypoint.new(0.5, Color3.fromRGB(0, 255, 255)),
+						ColorSequenceKeypoint.new(0.67, Color3.fromRGB(0, 0, 255)),
+						ColorSequenceKeypoint.new(0.83, Color3.fromRGB(255, 0, 255)),
+						ColorSequenceKeypoint.new(1, Color3.fromRGB(255, 0, 0)),
+					}),
+				}, hueBar)
+
+				-- Hue marker — white circle that tracks hue along the bar.
+				local hueCursor = create("Frame", {
+					Name = "HueCursor",
+					AnchorPoint = Vector2.new(0.5, 0.5),
+					Position = UDim2.fromScale(0, 0.5),
+					Size = UDim2.fromOffset(14, 14),
+					BackgroundColor3 = Color3.new(1, 1, 1),
+					BackgroundTransparency = 1,
+					BorderSizePixel = 0,
+					ZIndex = 123,
+				}, hueBar)
+				addCorner(hueCursor, 100)
+				local hueCursorStroke = addStroke(hueCursor, 1, Color3.new(1, 1, 1), 2)
+
+				local colorControl = {
+					Instance = swatch,
+					Flag = flag,
+					Value = { Color = color, Alpha = alpha, HexValue = colorToHex(color), Transparency = 1 - alpha },
+					Open = false,
+				}
+
+				local function placePicker()
+					local gui = screenGuiOf(swatch)
+					picker.Parent = gui
+					-- Same as Toggle/Hold: AnchorPoint top-right, sit left of the cursor
+					-- so the colour swatch stays visible under the mouse.
+					local mouse = UserInputService:GetMouseLocation()
+					local x = math.floor(mouse.X - 6)
+					local y = math.floor(mouse.Y + 10)
+					picker.Position = UDim2.fromOffset(math.max(8, x), math.max(8, y))
+				end
+
+				local function updateCursors(animate)
+					local svPos = UDim2.new(sat, 0, 1 - val, 0)
+					local huePos = UDim2.new(hue, 0, 0.5, 0)
+					svCursor.BackgroundColor3 = color
+					if animate then
+						motion(svCursor, "Position", svPos, 22)
+						motion(hueCursor, "Position", huePos, 22)
+					else
+						setNow(svCursor, "Position", svPos)
+						setNow(hueCursor, "Position", huePos)
+					end
+				end
+
+				local function pushValue(silent, animateCursor)
+					colorControl.Value = {
+						Color = color,
+						Alpha = alpha,
+						HexValue = colorToHex(color),
+						Transparency = 1 - alpha,
+					}
+					Vertex.Flags[flag] = colorControl.Value
+					swatch.BackgroundColor3 = color
+					satVal.BackgroundColor3 = Color3.fromHSV(hue, 1, 1)
+					updateCursors(animateCursor == true)
+					if not silent then
+						safeCall(data.Callback, colorControl.Value)
+					end
+				end
+				function colorControl:Set(newColor, newAlpha, silent)
+					if typeof(newColor) == "Color3" then
+						color = newColor
+						hue, sat, val = Color3.toHSV(color)
+					elseif type(newColor) == "table" and typeof(newColor.Color) == "Color3" then
+						color = newColor.Color
+						alpha = tonumber(newColor.Alpha) or alpha
+						hue, sat, val = Color3.toHSV(color)
+					elseif type(newColor) == "string" then
+						color = hexToColor(newColor)
+						hue, sat, val = Color3.toHSV(color)
+					end
+					if newAlpha ~= nil then
+						alpha = tonumber(newAlpha) or alpha
+					end
+					pushValue(silent, true)
+				end
+				function colorControl:SetOpen(open)
+					open = open == true
+					if open == self.Open then
+						return
+					end
+					self.Open = open
+					if open then
+						placePicker()
+						task.defer(placePicker)
+						updateCursors(false)
+						picker.Visible = true
+						setNow(pickerScale, "Scale", 0.94)
+						setNow(picker, "BackgroundTransparency", 1)
+						setPickerShadowAlpha(1, false)
+						setNow(satVal, "BackgroundTransparency", 1)
+						setNow(satVal, "ImageTransparency", 1)
+						setNow(hueBar, "BackgroundTransparency", 1)
+						setNow(svCursor, "BackgroundTransparency", 1)
+						setNow(svCursorStroke, "Transparency", 1)
+						setNow(hueCursor, "BackgroundTransparency", 1)
+						setNow(hueCursorStroke, "Transparency", 1)
+						motion(pickerScale, "Scale", 1, 16)
+						motion(picker, "BackgroundTransparency", 0, 16)
+						setPickerShadowAlpha(pickerShadowRest, true, 16)
+						motion(satVal, "BackgroundTransparency", 0, 16)
+						motion(satVal, "ImageTransparency", 0, 16)
+						motion(hueBar, "BackgroundTransparency", 0, 16)
+						motion(svCursor, "BackgroundTransparency", 0, 16)
+						motion(svCursorStroke, "Transparency", 0, 16)
+						motion(hueCursor, "BackgroundTransparency", 0, 16)
+						motion(hueCursorStroke, "Transparency", 0, 16)
+					else
+						motion(pickerScale, "Scale", 0.94, 20)
+						motion(picker, "BackgroundTransparency", 1, 20)
+						setPickerShadowAlpha(1, true, 20)
+						motion(satVal, "BackgroundTransparency", 1, 20)
+						motion(satVal, "ImageTransparency", 1, 20)
+						motion(hueBar, "BackgroundTransparency", 1, 20)
+						motion(svCursor, "BackgroundTransparency", 1, 20)
+						motion(svCursorStroke, "Transparency", 1, 20)
+						motion(hueCursor, "BackgroundTransparency", 1, 20)
+						motion(hueCursorStroke, "Transparency", 1, 20)
+						task.delay(0.18, function()
+							if not colorControl.Open and picker.Parent then
+								picker.Visible = false
+							end
+						end)
+					end
+				end
+				function colorControl:SetVisibility(visible)
+					swatch.Visible = visible == true
+					if not visible then
+						self:SetOpen(false)
+					end
+				end
+				local function sampleSatVal(input)
+					local relX = math.clamp((input.Position.X - satVal.AbsolutePosition.X) / math.max(satVal.AbsoluteSize.X, 1), 0, 1)
+					local relY = math.clamp((input.Position.Y - satVal.AbsolutePosition.Y) / math.max(satVal.AbsoluteSize.Y, 1), 0, 1)
+					sat, val = relX, 1 - relY
+					color = Color3.fromHSV(hue, sat, val)
+					pushValue(false, false)
+				end
+				local function sampleHue(input)
+					hue = math.clamp((input.Position.X - hueBar.AbsolutePosition.X) / math.max(hueBar.AbsoluteSize.X, 1), 0, 1)
+					color = Color3.fromHSV(hue, sat, val)
+					pushValue(false, false)
+				end
+				connect(swatch.MouseButton1Click, function()
+					colorControl:SetOpen(not colorControl.Open)
+				end)
+				connect(satVal.InputBegan, function(input)
+					if input.UserInputType == Enum.UserInputType.MouseButton1 then
+						sampleSatVal(input)
+					end
+				end)
+				connect(satVal.InputChanged, function(input)
+					if input.UserInputType == Enum.UserInputType.MouseMovement and input.UserInputState == Enum.UserInputState.Change then
+						if UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then
+							sampleSatVal(input)
+						end
+					end
+				end)
+				connect(hueBar.InputBegan, function(input)
+					if input.UserInputType == Enum.UserInputType.MouseButton1 then
+						sampleHue(input)
+					end
+				end)
+				connect(hueBar.InputChanged, function(input)
+					if input.UserInputType == Enum.UserInputType.MouseMovement then
+						if UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then
+							sampleHue(input)
+						end
+					end
+				end)
+				-- Close when clicking elsewhere.
+				connect(UserInputService.InputBegan, function(input)
+					if not colorControl.Open then
+						return
+					end
+					if
+						input.UserInputType ~= Enum.UserInputType.MouseButton1
+						and input.UserInputType ~= Enum.UserInputType.Touch
+					then
+						return
+					end
+					task.defer(function()
+						if not colorControl.Open then
+							return
+						end
+						local pos = input.Position
+						local pPos, pSize = picker.AbsolutePosition, picker.AbsoluteSize
+						local sPos, sSize = swatch.AbsolutePosition, swatch.AbsoluteSize
+						local overPicker = pos.X >= pPos.X
+							and pos.X <= pPos.X + pSize.X
+							and pos.Y >= pPos.Y
+							and pos.Y <= pPos.Y + pSize.Y
+						local overSwatch = pos.X >= sPos.X
+							and pos.X <= sPos.X + sSize.X
+							and pos.Y >= sPos.Y
+							and pos.Y <= sPos.Y + sSize.Y
+						if not overPicker and not overSwatch then
+							colorControl:SetOpen(false)
+						end
+					end)
+				end)
+				connect(swatch.AncestryChanged, function(_, parentNow)
+					if not parentNow and picker.Parent then
+						picker:Destroy()
+					end
+				end)
+				registerFlag(flag, function(v)
+					colorControl:Set(v, nil, true)
+				end)
+				pushValue(true, false)
+				return colorControl
+			end
+
+			-- Nested keybind pill attached to a control row.
+			-- Toggleable = true → Hold/Toggle gear; otherwise one-shot (no settings).
+			local function attachNestedKeybind(control, data)
+				data = data or {}
+				local flag = data.Flag or data.Name or HttpService:GenerateGUID(false)
+				local value = data.Default or Enum.KeyCode.Unknown
+				local toggleable = data.Toggleable == true
+				local rightPad = control._nestOffset or 14
+				-- Bind pill (+ optional settings gear with 12px gap).
+				control._nestOffset = rightPad + (toggleable and 110 or 78)
+				control.Instance.ClipsDescendants = false
+
+				local settingsPad = rightPad
+				local bindPad = toggleable and (rightPad + 40) or rightPad
+
+				local bindButton = create(
+					"TextButton",
+					merge(textProps(TEXT.Micro, Vertex.Theme.TextMuted, Vertex.Fonts.Bold), {
+						AnchorPoint = Vector2.new(1, 0.5),
+						Position = UDim2.new(1, -bindPad, 0.5, 0),
+						Size = UDim2.fromOffset(70, 24),
+						BackgroundColor3 = Vertex.Theme.Background,
+						BorderSizePixel = 0,
+						Text = value.Name,
+						TextXAlignment = Enum.TextXAlignment.Center,
+						AutoButtonColor = false,
+						ZIndex = 5,
+					}),
+					control.Instance
+				)
+				addCorner(bindButton, RADIUS.Inner)
+				addStroke(bindButton, FIELD_STROKE, nil, FIELD_STROKE_THICKNESS)
+
+				local keyControl = {
+					Instance = bindButton,
+					Flag = flag,
+					Value = value,
+					Toggleable = toggleable,
+					Mode = toggleable and normalizeKeyMode(data.Mode) or "Press",
+					_listening = false,
+				}
+				function keyControl:Set(newValue, silent)
+					local modeFromTable
+					if typeof(newValue) == "table" and newValue.Key then
+						modeFromTable = newValue.Mode
+						newValue = resolveKeyCode(newValue.Key)
+					end
+					if typeof(newValue) ~= "EnumItem" then
+						return
+					end
+					self.Value = newValue
+					if self.Toggleable and modeFromTable then
+						self.Mode = normalizeKeyMode(modeFromTable)
+					end
+					Vertex.Flags[flag] = { Key = newValue.Name, Mode = self.Mode }
+					bindButton.Text = newValue.Name
+					if not silent then
+						safeCall(data.Callback, newValue)
+					end
+				end
+				function keyControl:SetMode(mode)
+					if not self.Toggleable then
+						return
+					end
+					self.Mode = normalizeKeyMode(mode)
+					Vertex.Flags[flag] = { Key = self.Value.Name, Mode = self.Mode }
+					if self.Active and self.Mode == "Hold" then
+						self:SetActive(false)
+					end
+				end
+
+				local settingsBtn
+				if toggleable then
+					settingsBtn = attachKeybindModeSettings(control.Instance, keyControl, settingsPad)
+				end
+				function keyControl:SetVisibility(visible)
+					visible = visible == true
+					bindButton.Visible = visible
+					if settingsBtn then
+						settingsBtn.Visible = visible
+					end
+				end
+				wireKeybindRuntime(keyControl, data)
+				linkKeybindToList(
+					keyControl,
+					data,
+					(control.Label and control.Label.Text) or data.Name or flag
+				)
+
+				connect(bindButton.MouseButton1Click, function()
+					keyControl._listening = true
+					bindButton.Text = "..."
+					bindButton.TextColor3 = Vertex.Theme.AccentText
+				end)
+				connect(UserInputService.InputBegan, function(input)
+					if keyControl._listening and input.KeyCode ~= Enum.KeyCode.Unknown then
+						keyControl._listening = false
+						bindButton.TextColor3 = Vertex.Theme.TextMuted
+						keyControl:Set(input.KeyCode)
+					end
+				end)
+				registerFlag(flag, function(v)
+					keyControl:Set(v, true)
+				end)
+				keyControl:Set(value, true)
+				return keyControl
+			end
+
+			function section:AddLabel(labelOptions)
+				if type(labelOptions) == "string" then
+					labelOptions = { Text = labelOptions }
+				end
+				labelOptions = labelOptions or {}
+				local row = makeControl(self, labelOptions.Description and 56 or 42)
+				local label =
+					inlineLabel(row, labelOptions.Text or labelOptions.Name or "Label", labelOptions.Description)
+				attachTooltip(row, labelOptions.Tooltip)
+				local control = attachControlApi({ Instance = row, Label = label, _nestOffset = 14 }, label)
+				function control:Set(text)
+					label.Text = tostring(text)
+				end
+				function control:ColorPicker(data)
+					return attachColorPicker(self, data)
+				end
+				function control:Keybind(data)
+					return attachNestedKeybind(self, data)
+				end
+				table.insert(self.Items, control)
+				return control
+			end
+
+			function section:AddButton(buttonOptions)
+				buttonOptions = buttonOptions or {}
+				local row = makeControl(self, buttonOptions.Description and 56 or SPACING.ControlH)
+				local button = create("TextButton", {
+					BackgroundTransparency = 1,
+					BorderSizePixel = 0,
+					Size = UDim2.fromScale(1, 1),
+					Text = "",
+					AutoButtonColor = false,
+					ZIndex = 3,
+				}, row)
+				local label = inlineLabel(button, buttonOptions.Name or "Button", buttonOptions.Description)
+				attachTooltip(row, buttonOptions.Tooltip)
+				local arrow = makeGlyph(button, "chevron-right", "›", 18, Vertex.Theme.TextDim)
+				arrow.AnchorPoint = Vector2.new(1, 0.5)
+				arrow.Position = UDim2.new(1, -12, 0.5, 0)
+				hoverFill(button, Vertex.Theme.SurfaceRaised, Vertex.Theme.SurfaceHover, row)
+				local control = attachControlApi({
+					Instance = row,
+					Label = label,
+					Press = function()
+						safeCall(buttonOptions.Callback)
+					end,
+				}, label)
+				connect(button.MouseButton1Click, function()
+					paintGlyph(arrow, Vertex.Theme.Accent, 26)
+					task.delay(0.18, function()
+						if arrow.Parent then
+							paintGlyph(arrow, Vertex.Theme.TextDim)
+						end
+					end)
+					control:Press()
+				end)
+				table.insert(self.Items, control)
+				return control
+			end
+
+			function section:AddToggle(toggleOptions)
+				toggleOptions = toggleOptions or {}
+				local flag = toggleOptions.Flag or toggleOptions.Name or HttpService:GenerateGUID(false)
+				local value = toggleOptions.Default == true
+				Vertex.Flags[flag] = value
+
+				local row = makeControl(self, toggleOptions.Description and 56 or SPACING.ControlH)
+				local label = inlineLabel(row, toggleOptions.Name or "Toggle", toggleOptions.Description)
+				attachTooltip(row, toggleOptions.Tooltip)
+				local track = create("TextButton", {
+					Name = "Toggle",
+					AnchorPoint = Vector2.new(1, 0.5),
+					Position = UDim2.new(1, -14, 0.5, 0),
+					Size = UDim2.fromOffset(42, 23),
+					BackgroundColor3 = value and Vertex.Theme.Accent or Vertex.Theme.SurfaceHover,
+					BorderSizePixel = 0,
+					Text = "",
+					AutoButtonColor = false,
+					ZIndex = 3,
+				}, row)
+				addCorner(track, RADIUS.Pill)
+				local knob = create("Frame", {
+					AnchorPoint = Vector2.new(0, 0.5),
+					Position = value and UDim2.new(0, 22, 0.5, 0) or UDim2.new(0, 3, 0.5, 0),
+					Size = UDim2.fromOffset(17, 17),
+					BackgroundColor3 = Vertex.Theme.Knob,
+					BorderSizePixel = 0,
+					ZIndex = 4,
+				}, track)
+				addCorner(knob, RADIUS.Pill)
+
+				local control = attachControlApi({
+					Instance = row,
+					Label = label,
+					Flag = flag,
+					Value = value,
+					_nestOffset = 64,
+				}, label)
+				function control:Set(newValue, silent)
+					self.Value = newValue == true
+					Vertex.Flags[flag] = self.Value
+					motion(
+						track,
+						"BackgroundColor3",
+						self.Value and Vertex.Theme.Accent or Vertex.Theme.SurfaceHover,
+						20
+					)
+					motion(knob, "Position", self.Value and UDim2.new(0, 22, 0.5, 0) or UDim2.new(0, 3, 0.5, 0), 24)
+					if not silent then
+						safeCall(toggleOptions.Callback, self.Value)
+					end
+				end
+				watchTheme(function()
+					if not track.Parent then
+						return false
+					end
+					motion(
+						track,
+						"BackgroundColor3",
+						control.Value and Vertex.Theme.Accent or Vertex.Theme.SurfaceHover,
+						18
+					)
+				end)
+				function control:ColorPicker(data)
+					return attachColorPicker(self, data)
+				end
+				function control:Keybind(data)
+					return attachNestedKeybind(self, data)
+				end
+				connect(track.MouseButton1Click, function()
+					control:Set(not control.Value)
+				end)
+				registerFlag(flag, function(v)
+					control:Set(v, true)
+				end)
+				table.insert(self.Items, control)
+				return control
+			end
+
+			function section:AddSlider(sliderOptions)
+				sliderOptions = sliderOptions or {}
+				local minimum = tonumber(sliderOptions.Min) or 0
+				local maximum = tonumber(sliderOptions.Max) or 100
+				local decimals = tonumber(sliderOptions.Decimals)
+				local step = tonumber(sliderOptions.Step)
+					or (decimals and (10 ^ -decimals) or 1)
+				local flag = sliderOptions.Flag or sliderOptions.Name or HttpService:GenerateGUID(false)
+				local value = math.clamp(tonumber(sliderOptions.Default) or minimum, minimum, maximum)
+				Vertex.Flags[flag] = value
+
+				local row = makeControl(self, 68)
+				local label = stackLabel(row, sliderOptions.Name or "Slider")
+				attachTooltip(row, sliderOptions.Tooltip)
+				local valueLabel = create(
+					"TextLabel",
+					merge(textProps(TEXT.Body, Vertex.Theme.AccentText, Vertex.Fonts.Bold), {
+						Text = tostring(value) .. (sliderOptions.Suffix or ""),
+						TextXAlignment = Enum.TextXAlignment.Right,
+						AnchorPoint = Vector2.new(1, 0),
+						Position = UDim2.new(1, -14, 0, 12),
+						Size = UDim2.fromOffset(100, 18),
+						ZIndex = 3,
+					}),
+					row
+				)
+				local track = create("TextButton", {
+					Position = UDim2.new(0, 14, 0, 46),
+					Size = UDim2.new(1, -28, 0, 7),
+					BackgroundColor3 = Vertex.Theme.SurfaceHover,
+					BorderSizePixel = 0,
+					Text = "",
+					AutoButtonColor = false,
+					ZIndex = 3,
+				}, row)
+				addCorner(track, RADIUS.Pill)
+				local fill = create("Frame", {
+					Size = UDim2.fromScale((value - minimum) / math.max(maximum - minimum, 1), 1),
+					BackgroundColor3 = Vertex.Theme.Accent,
+					BorderSizePixel = 0,
+					ZIndex = 4,
+				}, track)
+				addCorner(fill, RADIUS.Pill)
+
+				local control = attachControlApi({ Instance = row, Label = label, Flag = flag, Value = value }, label)
+				watchTheme(function()
+					if not fill.Parent then
+						return false
+					end
+					motion(fill, "BackgroundColor3", Vertex.Theme.Accent, 18)
+					motion(valueLabel, "TextColor3", Vertex.Theme.AccentText, 18)
+				end)
+				function control:Set(newValue, silent)
+					newValue = math.clamp(tonumber(newValue) or minimum, minimum, maximum)
+					newValue = math.floor((newValue / step) + 0.5) * step
+					if decimals then
+						local scale = 10 ^ decimals
+						newValue = math.floor(newValue * scale + 0.5) / scale
+					end
+					self.Value = newValue
+					Vertex.Flags[flag] = newValue
+					valueLabel.Text = tostring(newValue) .. (sliderOptions.Suffix or "")
+					motion(fill, "Size", UDim2.fromScale((newValue - minimum) / math.max(maximum - minimum, 1), 1), 26)
+					if not silent then
+						safeCall(sliderOptions.Callback, newValue)
+					end
+				end
+
+				local sliding = false
+				local function update(input)
+					local percent = math.clamp(
+						(input.Position.X - track.AbsolutePosition.X) / math.max(track.AbsoluteSize.X, 1),
+						0,
+						1
+					)
+					control:Set(minimum + ((maximum - minimum) * percent))
+				end
+				connect(track.InputBegan, function(input)
+					if
+						input.UserInputType == Enum.UserInputType.MouseButton1
+						or input.UserInputType == Enum.UserInputType.Touch
+					then
+						sliding = true
+						update(input)
+					end
+				end)
+				connect(UserInputService.InputChanged, function(input)
+					if
+						sliding
+						and (
+							input.UserInputType == Enum.UserInputType.MouseMovement
+							or input.UserInputType == Enum.UserInputType.Touch
+						)
+					then
+						update(input)
+					end
+				end)
+				connect(UserInputService.InputEnded, function(input)
+					if
+						input.UserInputType == Enum.UserInputType.MouseButton1
+						or input.UserInputType == Enum.UserInputType.Touch
+					then
+						sliding = false
+					end
+				end)
+				registerFlag(flag, function(v)
+					control:Set(v, true)
+				end)
+				table.insert(self.Items, control)
+				return control
+			end
+
+			function section:AddRangeSlider(rangeOptions)
+				rangeOptions = rangeOptions or {}
+				local minimum = tonumber(rangeOptions.Min) or 0
+				local maximum = tonumber(rangeOptions.Max) or 100
+				local gap = tonumber(rangeOptions.Gap) or 1
+				local step = tonumber(rangeOptions.Step) or 1
+				local flag = rangeOptions.Flag or rangeOptions.Name or HttpService:GenerateGUID(false)
+				local defaults = rangeOptions.Default or { minimum, maximum }
+				local low = math.clamp(tonumber(defaults[1] or defaults.min) or minimum, minimum, maximum)
+				local high = math.clamp(tonumber(defaults[2] or defaults.max) or maximum, minimum, maximum)
+				if high - low < gap then
+					high = math.min(maximum, low + gap)
+				end
+				Vertex.Flags[flag] = { low, high }
+
+				local row = makeControl(self, 68)
+				local label = stackLabel(row, rangeOptions.Name or "Range")
+				attachTooltip(row, rangeOptions.Tooltip)
+				local valueLabel = create(
+					"TextLabel",
+					merge(textProps(TEXT.Body, Vertex.Theme.AccentText, Vertex.Fonts.Bold), {
+						Text = tostring(low) .. " – " .. tostring(high) .. (rangeOptions.Suffix or ""),
+						TextXAlignment = Enum.TextXAlignment.Right,
+						AnchorPoint = Vector2.new(1, 0),
+						Position = UDim2.new(1, -14, 0, 12),
+						Size = UDim2.fromOffset(140, 18),
+						ZIndex = 3,
+					}),
+					row
+				)
+				local track = create("TextButton", {
+					Position = UDim2.new(0, 14, 0, 46),
+					Size = UDim2.new(1, -28, 0, 7),
+					BackgroundColor3 = Vertex.Theme.SurfaceHover,
+					BorderSizePixel = 0,
+					Text = "",
+					AutoButtonColor = false,
+					ZIndex = 3,
+				}, row)
+				addCorner(track, RADIUS.Pill)
+				local fill = create("Frame", {
+					BackgroundColor3 = Vertex.Theme.Accent,
+					BorderSizePixel = 0,
+					ZIndex = 4,
+				}, track)
+				addCorner(fill, RADIUS.Pill)
+				watchTheme(function()
+					if not fill.Parent then
+						return false
+					end
+					motion(fill, "BackgroundColor3", Vertex.Theme.Accent, 18)
+					motion(valueLabel, "TextColor3", Vertex.Theme.AccentText, 18)
+				end)
+				local function makeHandle(xScale)
+					local handle = create("Frame", {
+						AnchorPoint = Vector2.new(0.5, 0.5),
+						Position = UDim2.fromScale(xScale, 0.5),
+						Size = UDim2.fromOffset(14, 14),
+						BackgroundColor3 = Vertex.Theme.Knob,
+						BorderSizePixel = 0,
+						ZIndex = 5,
+					}, track)
+					addCorner(handle, RADIUS.Pill)
+					return handle
+				end
+				local lowHandle = makeHandle((low - minimum) / math.max(maximum - minimum, 1))
+				local highHandle = makeHandle((high - minimum) / math.max(maximum - minimum, 1))
+
+				local control = attachControlApi({
+					Instance = row,
+					Label = label,
+					Flag = flag,
+					Value = { low, high },
+				}, label)
+				local function layout()
+					local span = math.max(maximum - minimum, 1)
+					local lowP = (low - minimum) / span
+					local highP = (high - minimum) / span
+					fill.Position = UDim2.fromScale(lowP, 0)
+					fill.Size = UDim2.fromScale(math.max(highP - lowP, 0), 1)
+					lowHandle.Position = UDim2.fromScale(lowP, 0.5)
+					highHandle.Position = UDim2.fromScale(highP, 0.5)
+					valueLabel.Text = tostring(low) .. " – " .. tostring(high) .. (rangeOptions.Suffix or "")
+				end
+				function control:Set(minValue, maxValue, silent)
+					if type(minValue) == "table" then
+						maxValue = minValue[2] or minValue.max
+						minValue = minValue[1] or minValue.min
+					end
+					low = math.clamp(tonumber(minValue) or low, minimum, maximum)
+					high = math.clamp(tonumber(maxValue) or high, minimum, maximum)
+					if high - low < gap then
+						high = math.min(maximum, low + gap)
+					end
+					low = math.floor((low / step) + 0.5) * step
+					high = math.floor((high / step) + 0.5) * step
+					self.Value = { low, high }
+					Vertex.Flags[flag] = self.Value
+					layout()
+					if not silent then
+						safeCall(rangeOptions.Callback, low, high)
+					end
+				end
+				layout()
+
+				local dragging = nil
+				local function update(input)
+					local percent = math.clamp(
+						(input.Position.X - track.AbsolutePosition.X) / math.max(track.AbsoluteSize.X, 1),
+						0,
+						1
+					)
+					local value = minimum + ((maximum - minimum) * percent)
+					if dragging == "low" then
+						control:Set(math.min(value, high - gap), high)
+					else
+						control:Set(low, math.max(value, low + gap))
+					end
+				end
+				local function beginDrag(handle, which)
+					connect(handle.InputBegan, function(input)
+						if input.UserInputType == Enum.UserInputType.MouseButton1 then
+							dragging = which
+							update(input)
+						end
+					end)
+				end
+				beginDrag(lowHandle, "low")
+				beginDrag(highHandle, "high")
+				connect(track.InputBegan, function(input)
+					if input.UserInputType == Enum.UserInputType.MouseButton1 then
+						local percent = (input.Position.X - track.AbsolutePosition.X) / math.max(track.AbsoluteSize.X, 1)
+						local value = minimum + ((maximum - minimum) * percent)
+						dragging = math.abs(value - low) <= math.abs(value - high) and "low" or "high"
+						update(input)
+					end
+				end)
+				connect(UserInputService.InputChanged, function(input)
+					if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+						update(input)
+					end
+				end)
+				connect(UserInputService.InputEnded, function(input)
+					if input.UserInputType == Enum.UserInputType.MouseButton1 then
+						dragging = nil
+					end
+				end)
+				registerFlag(flag, function(v)
+					control:Set(v, nil, true)
+				end)
+				table.insert(self.Items, control)
+				return control
+			end
+
+			function section:AddInput(inputOptions)
+				inputOptions = inputOptions or {}
+				local flag = inputOptions.Flag or inputOptions.Name or HttpService:GenerateGUID(false)
+				local value = tostring(inputOptions.Default or "")
+				Vertex.Flags[flag] = value
+
+				local row = makeControl(self, 78)
+				local label = stackLabel(row, inputOptions.Name or "Input")
+				attachTooltip(row, inputOptions.Tooltip)
+				local field = create(
+					"TextBox",
+					merge(textProps(TEXT.Body, Vertex.Theme.Text, Vertex.Fonts.Medium), {
+						Position = UDim2.new(0, 14, 0, 38),
+						Size = UDim2.new(1, -28, 0, 30),
+						BackgroundColor3 = Vertex.Theme.Background,
+						BorderSizePixel = 0,
+						Text = value,
+						PlaceholderText = inputOptions.Placeholder or "Enter a value...",
+						PlaceholderColor3 = Vertex.Theme.TextDim,
+						ClearTextOnFocus = false,
+						ClipsDescendants = false,
+						ZIndex = 3,
+					}),
+					row
+				)
+				addCorner(field, RADIUS.Inner)
+				local fieldStroke = addStroke(field, FIELD_STROKE, nil, FIELD_STROKE_THICKNESS)
+				addPadding(field, 0, 12, 0, 12)
+
+				local control = attachControlApi({ Instance = row, Input = field, Label = label, Flag = flag, Value = value }, label)
+				function control:Set(newValue, silent)
+					self.Value = tostring(newValue or "")
+					field.Text = self.Value
+					Vertex.Flags[flag] = self.Value
+					if not silent then
+						safeCall(inputOptions.Callback, self.Value)
+					end
+				end
+				connect(field.Focused, function()
+					motion(fieldStroke, "Transparency", 0.3, 22)
+					motion(fieldStroke, "Color", Vertex.Theme.Accent, 22)
+				end)
+				connect(field.FocusLost, function(enterPressed)
+					motion(fieldStroke, "Transparency", FIELD_STROKE, 22)
+					motion(fieldStroke, "Color", STROKE_COLOR, 22)
+					if inputOptions.Numeric and not tonumber(field.Text) then
+						field.Text = control.Value
+						return
+					end
+					control:Set(field.Text)
+					if enterPressed or inputOptions.Finished then
+						safeCall(inputOptions.OnEnter or inputOptions.Finished, field.Text)
+					end
+				end)
+				registerFlag(flag, function(v)
+					control:Set(v, true)
+				end)
+				table.insert(self.Items, control)
+				return control
+			end
+
+			function section:AddDropdown(dropdownOptions)
+				dropdownOptions = dropdownOptions or {}
+				local items = dropdownOptions.Items or {}
+				local flag = dropdownOptions.Flag or dropdownOptions.Name or HttpService:GenerateGUID(false)
+				local multi = dropdownOptions.Multi == true
+				local selected = dropdownOptions.Default
+				if multi then
+					selected = type(selected) == "table" and selected or (selected ~= nil and { selected } or {})
+				end
+				Vertex.Flags[flag] = selected
+
+				local baseHeight = 78
+				local optionHeight = 32
+				local row = makeControl(self, baseHeight)
+				local label = stackLabel(row, dropdownOptions.Name or "Dropdown")
+				attachTooltip(row, dropdownOptions.Tooltip)
+
+				local function displayText()
+					if multi then
+						if #selected == 0 then
+							return dropdownOptions.Placeholder or "Select..."
+						end
+						return table.concat((function()
+							local names = {}
+							for _, item in ipairs(selected) do
+								names[#names + 1] = tostring(item)
+							end
+							return names
+						end)(), ", ")
+					end
+					return selected ~= nil and tostring(selected) or (dropdownOptions.Placeholder or "Select...")
+				end
+
+				local selector = create(
+					"TextButton",
+					merge(textProps(TEXT.Body, Vertex.Theme.Text, Vertex.Fonts.Medium), {
+						Position = UDim2.new(0, 14, 0, 38),
+						Size = UDim2.new(1, -28, 0, 30),
+						BackgroundColor3 = Vertex.Theme.Background,
+						BorderSizePixel = 0,
+						Text = displayText(),
+						TextColor3 = (multi and #selected > 0 or not multi and selected ~= nil) and Vertex.Theme.Text
+							or Vertex.Theme.TextDim,
+						AutoButtonColor = false,
+						ClipsDescendants = false,
+						ZIndex = 3,
+					}),
+					row
+				)
+				addCorner(selector, RADIUS.Inner)
+				local selectorStroke = addStroke(selector, FIELD_STROKE, nil, FIELD_STROKE_THICKNESS)
+				addPadding(selector, 0, 34, 0, 12)
+
+				local chevron = makeGlyph(selector, "chevron-down", "⌄", 16, Vertex.Theme.TextMuted)
+				chevron.AnchorPoint = Vector2.new(1, 0.5)
+				chevron.Position = UDim2.new(1, 30, 0.5, 0)
+
+				local optionsHolder = create("Frame", {
+					Name = "Options",
+					BackgroundTransparency = 1,
+					Position = UDim2.fromOffset(14, baseHeight),
+					Size = UDim2.new(1, -28, 0, 0),
+					AutomaticSize = Enum.AutomaticSize.Y,
+					ZIndex = 3,
+				}, row)
+				create("UIListLayout", {
+					Padding = UDim.new(0, 4),
+					SortOrder = Enum.SortOrder.LayoutOrder,
+				}, optionsHolder)
+
+				local control = attachControlApi({
+					Instance = row,
+					Label = label,
+					Flag = flag,
+					Value = selected,
+					Open = false,
+					Items = items,
+					Multi = multi,
+				}, label)
+
+				local function isSelected(item)
+					if multi then
+						for _, value in ipairs(selected) do
+							if tostring(value) == tostring(item) then
+								return true
+							end
+						end
+						return false
+					end
+					return tostring(item) == tostring(selected)
+				end
+
+				function control:Set(newValue, silent)
+					if multi then
+						selected = type(newValue) == "table" and newValue or { newValue }
+						self.Value = selected
+					else
+						selected = newValue
+						self.Value = newValue
+					end
+					Vertex.Flags[flag] = self.Value
+					selector.Text = displayText()
+					selector.TextColor3 = (multi and #selected > 0 or not multi and selected ~= nil) and Vertex.Theme.Text
+						or Vertex.Theme.TextDim
+					if not silent then
+						safeCall(dropdownOptions.Callback, self.Value)
+					end
+				end
+
+				function control:Add(value)
+					table.insert(self.Items, value)
+					self:Refresh(self.Items)
+				end
+
+				function control:Remove(optionName)
+					for index = #self.Items, 1, -1 do
+						if tostring(self.Items[index]) == tostring(optionName) then
+							table.remove(self.Items, index)
+						end
+					end
+					self:Refresh(self.Items)
+				end
+
+				function control:SetOpen(open)
+					self.Open = open == true
+					motion(selectorStroke, "Transparency", self.Open and 0.3 or FIELD_STROKE, 22)
+					motion(selectorStroke, "Color", self.Open and Vertex.Theme.Accent or STROKE_COLOR, 22)
+					if self.Open then
+						for _, other in ipairs(window.OpenDropdowns) do
+							if other ~= self and other.Open then
+								other:SetOpen(false)
+							end
+						end
+					end
+					local count = #self.Items
+					local expanded = count * optionHeight + math.max(count - 1, 0) * 4 + 10
+					local height = self.Open and (baseHeight + expanded) or baseHeight
+					motion(chevron, "Rotation", self.Open and 180 or 0, 20)
+					motion(row, "Size", UDim2.new(1, 0, 0, height), 18)
+				end
+
+				function control:Refresh(newItems)
+					self.Items = newItems or {}
+					for _, child in ipairs(optionsHolder:GetChildren()) do
+						if child:IsA("GuiButton") then
+							child:Destroy()
+						end
+					end
+					for _, item in ipairs(self.Items) do
+						local chosen = isSelected(item)
+						local option = create(
+							"TextButton",
+							merge(
+								textProps(
+									TEXT.Body,
+									chosen and Vertex.Theme.Text or Vertex.Theme.TextMuted,
+									Vertex.Fonts.SemiBold
+								),
+								{
+									BackgroundColor3 = chosen and Vertex.Theme.SurfaceHover or Vertex.Theme.Background,
+									BorderSizePixel = 0,
+									Size = UDim2.new(1, 0, 0, optionHeight),
+									Text = tostring(item),
+									AutoButtonColor = false,
+									ZIndex = 3,
+								}
+							),
+							optionsHolder
+						)
+						addCorner(option, RADIUS.Inner)
+						addPadding(option, 0, 10, 0, 10)
+						hoverFill(
+							option,
+							chosen and Vertex.Theme.SurfaceHover or Vertex.Theme.Background,
+							Vertex.Theme.SurfaceHover
+						)
+						connect(option.MouseButton1Click, function()
+							if multi then
+								local nextValues = {}
+								local found = false
+								for _, value in ipairs(selected) do
+									if tostring(value) == tostring(item) then
+										found = true
+									else
+										nextValues[#nextValues + 1] = value
+									end
+								end
+								if not found then
+									nextValues[#nextValues + 1] = item
+								end
+								control:Set(nextValues)
+								control:Refresh(self.Items)
+							else
+								control:Set(item)
+								control:SetOpen(false)
+								control:Refresh(self.Items)
+							end
+						end)
+					end
+					if self.Open then
+						self:SetOpen(true)
+					end
+				end
+
+				connect(selector.MouseButton1Click, function()
+					control:SetOpen(not control.Open)
+				end)
+				table.insert(window.OpenDropdowns, control)
+				registerFlag(flag, function(v)
+					control:Set(v, true)
+					control:Refresh(control.Items)
+				end)
+				control:Refresh(items)
+				table.insert(self.Items, control)
+				return control
+			end
+
+			function section:AddKeybind(keybindOptions)
+				keybindOptions = keybindOptions or {}
+				local flag = keybindOptions.Flag or keybindOptions.Name or HttpService:GenerateGUID(false)
+				local value = keybindOptions.Default or Enum.KeyCode.Unknown
+				local toggleable = keybindOptions.Toggleable == true
+				local mode = toggleable and normalizeKeyMode(keybindOptions.Mode) or "Press"
+				Vertex.Flags[flag] = { Key = value.Name, Mode = mode }
+
+				local row = makeControl(self, keybindOptions.Description and 56 or SPACING.ControlH)
+				row.ClipsDescendants = false
+				local label = inlineLabel(row, keybindOptions.Name or "Keybind", keybindOptions.Description)
+				attachTooltip(row, keybindOptions.Tooltip)
+
+				-- Optional settings gear to the left of the key pill (Toggleable only).
+				local bindRight = toggleable and 54 or 14
+				local bindButton = create(
+					"TextButton",
+					merge(textProps(TEXT.Small, Vertex.Theme.TextMuted, Vertex.Fonts.Bold), {
+						AnchorPoint = Vector2.new(1, 0.5),
+						Position = UDim2.new(1, -bindRight, 0.5, 0),
+						Size = UDim2.fromOffset(90, 28),
+						BackgroundColor3 = Vertex.Theme.Background,
+						BorderSizePixel = 0,
+						Text = value.Name,
+						TextXAlignment = Enum.TextXAlignment.Center,
+						AutoButtonColor = false,
+						ZIndex = 3,
+					}),
+					row
+				)
+				addCorner(bindButton, RADIUS.Inner)
+				addStroke(bindButton, FIELD_STROKE, nil, FIELD_STROKE_THICKNESS)
+
+				local control = attachControlApi({
+					Instance = row,
+					Label = label,
+					Flag = flag,
+					Value = value,
+					Toggleable = toggleable,
+					Mode = mode,
+					_listening = false,
+				}, label)
+
+				function control:Set(newValue, silent)
+					local modeFromTable
+					if typeof(newValue) == "table" and newValue.Key then
+						modeFromTable = newValue.Mode
+						newValue = resolveKeyCode(newValue.Key)
+					end
+					if typeof(newValue) ~= "EnumItem" then
+						return
+					end
+					self.Value = newValue
+					if self.Toggleable and modeFromTable then
+						self.Mode = normalizeKeyMode(modeFromTable)
+					end
+					Vertex.Flags[flag] = { Key = newValue.Name, Mode = self.Mode }
+					bindButton.Text = newValue.Name
+					if not silent then
+						safeCall(keybindOptions.Callback, newValue)
+					end
+				end
+
+				function control:SetMode(modeName)
+					if not self.Toggleable then
+						return
+					end
+					self.Mode = normalizeKeyMode(modeName)
+					Vertex.Flags[flag] = { Key = self.Value.Name, Mode = self.Mode }
+					if self.Active and self.Mode == "Hold" then
+						self:SetActive(false)
+					end
+				end
+
+				if toggleable then
+					attachKeybindModeSettings(row, control, 14)
+				end
+				wireKeybindRuntime(control, keybindOptions)
+				linkKeybindToList(control, keybindOptions, keybindOptions.Name or flag)
+
+				connect(bindButton.MouseButton1Click, function()
+					control._listening = true
+					bindButton.Text = "..."
+					bindButton.TextColor3 = Vertex.Theme.AccentText
+					motion(bindButton, "BackgroundColor3", Vertex.Theme.SurfaceHover, 20)
+				end)
+				connect(UserInputService.InputBegan, function(input)
+					if control._listening and input.KeyCode ~= Enum.KeyCode.Unknown then
+						control._listening = false
+						bindButton.TextColor3 = Vertex.Theme.TextMuted
+						control:Set(input.KeyCode)
+						motion(bindButton, "BackgroundColor3", Vertex.Theme.Background, 20)
+					end
+				end)
+				registerFlag(flag, function(v)
+					control:Set(v, true)
+				end)
+				table.insert(self.Items, control)
+				return control
+			end
+
+			function section:AddColorPicker(colorOptions)
+				colorOptions = colorOptions or {}
+				local row = makeControl(self, colorOptions.Description and 56 or SPACING.ControlH)
+				local label = inlineLabel(row, colorOptions.Name or "Color", colorOptions.Description)
+				attachTooltip(row, colorOptions.Tooltip)
+				local control = attachControlApi({ Instance = row, Label = label, _nestOffset = 14 }, label)
+				local picker = attachColorPicker(control, colorOptions)
+				control.ColorPicker = picker
+				control.Set = function(_, ...)
+					return picker:Set(...)
+				end
+				table.insert(self.Items, control)
+				return control
+			end
+
+			-- Nexonix-style short aliases.
+			section.Label = section.AddLabel
+			section.Button = section.AddButton
+			section.Toggle = section.AddToggle
+			section.Slider = section.AddSlider
+			section.RangeSlider = section.AddRangeSlider
+			section.Dropdown = section.AddDropdown
+			section.Textbox = section.AddInput
+			section.Input = section.AddInput
+			section.Keybind = section.AddKeybind
+			section.ColorPicker = section.AddColorPicker
+
+			table.insert(tab.Sections, section)
+			return section
+		end
+
+		table.insert(window.Tabs, tab)
+		if not window.CurrentTab then
+			tab:Select()
+		end
+		return tab
+	end
+
+	table.insert(self.Windows, window)
+
+	-- Auto keybind list: hidden until at least one visible toggleable bind exists.
+	window.KeybindList = self:KeybindList({
+		Name = options.KeybindListName or "Keybinds",
+		Window = window,
+	})
+
+	return window
+end
+
+--=====================================================================
+-- Public: notifications
+--=====================================================================
+
+-- Separate ScreenGui so notifs keep showing while the window is hidden.
+local function getNotifyGui()
+	if Vertex._notifyGui and Vertex._notifyGui.Parent then
+		return Vertex._notifyGui
+	end
+	local gui = create("ScreenGui", {
+		Name = "VertexNotifications",
+		ResetOnSpawn = false,
+		IgnoreGuiInset = true,
+		ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+		DisplayOrder = 120,
+	}, getGuiParent())
+	if syn and type(syn.protect_gui) == "function" then
+		pcall(syn.protect_gui, gui)
+	end
+	Vertex._notifyGui = gui
+	return gui
+end
+
+function Vertex:Notify(options)
+	if type(options) == "string" then
+		options = { Title = options }
+	end
+	options = options or {}
+
+	if #self.Windows == 0 then
+		warn("[Vertex UI] Create a window before sending notifications.")
+		return
+	end
+
+	local screenGui = getNotifyGui()
+	local holder = screenGui:FindFirstChild("Notifications")
+	if not holder then
+		holder = create("Frame", {
+			Name = "Notifications",
+			AnchorPoint = Vector2.new(1, 0),
+			Position = UDim2.new(1, -18, 0, 18),
+			Size = UDim2.fromOffset(320, 0),
+			AutomaticSize = Enum.AutomaticSize.Y,
+			BackgroundTransparency = 1,
+			ZIndex = 60,
+		}, screenGui)
+		create("UIListLayout", {
+			Padding = UDim.new(0, 8),
+			HorizontalAlignment = Enum.HorizontalAlignment.Right,
+			SortOrder = Enum.SortOrder.LayoutOrder,
+		}, holder)
+	end
+
+	local notification = create("Frame", {
+		BackgroundColor3 = self.Theme.Surface,
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		Size = UDim2.fromOffset(310, options.Description and 74 or 54),
+		Position = UDim2.fromOffset(88, 0),
+		ZIndex = 61,
+	}, holder)
+	addCorner(notification, RADIUS.Card)
+	local notifShadow = addDropShadow(notification, {
+		Blur = 36,
+		YOffset = 8,
+		Spread = 10,
+		Transparency = 0.28,
+	})
+	local notifShadowRest = 0.28
+	local notifScale = create("UIScale", { Scale = 0.86 }, notification)
+
+	local function setNotifShadowAlpha(alpha, animate, speed)
+		if not notifShadow then
+			return
+		end
+		if notifShadow.ClassName == "UIShadow" then
+			if animate then
+				motion(notifShadow, "Transparency", alpha, speed)
+			else
+				setNow(notifShadow, "Transparency", alpha)
+			end
+		elseif notifShadow:IsA("ImageLabel") then
+			if animate then
+				motion(notifShadow, "ImageTransparency", alpha, speed)
+			else
+				setNow(notifShadow, "ImageTransparency", alpha)
+			end
+		end
+	end
+
+	local accentColor = self.Theme.Accent
+	local accentBar = create("Frame", {
+		BackgroundColor3 = accentColor,
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		AnchorPoint = Vector2.new(0, 0.5),
+		Position = UDim2.new(0, 12, 0.5, 0),
+		Size = UDim2.new(0, 3, 0, 0),
+		ZIndex = 62,
+	}, notification)
+	addCorner(accentBar, RADIUS.Pill)
+
+	local title = create(
+		"TextLabel",
+		merge(textProps(TEXT.Label, self.Theme.Text, self.Fonts.Bold), {
+			Text = options.Title or "Notification",
+			TextTransparency = 1,
+			Position = UDim2.fromOffset(28, options.Description and 11 or 0),
+			Size = UDim2.new(1, -40, options.Description and 0 or 1, options.Description and 20 or 0),
+			ZIndex = 62,
+		}),
+		notification
+	)
+
+	local body
+	if options.Description then
+		body = create(
+			"TextLabel",
+			merge(textProps(TEXT.Small, self.Theme.TextMuted, self.Fonts.Medium), {
+				Text = options.Description,
+				TextTransparency = 1,
+				Position = UDim2.fromOffset(28, 34),
+				Size = UDim2.new(1, -40, 0, 30),
+				TextWrapped = true,
+				TextYAlignment = Enum.TextYAlignment.Top,
+				ZIndex = 62,
+			}),
+			notification
+		)
+	end
+
+	local duration = math.max(tonumber(options.Duration) or 3, 0.6)
+
+	-- Enter: slide + scale spring + staggered fade + accent grow.
+	setNotifShadowAlpha(1, false)
+	motion(notification, "BackgroundTransparency", 0, 14)
+	motion(notification, "Position", UDim2.fromOffset(-6, 0), 15)
+	motion(notifScale, "Scale", 1.045, 16)
+	setNotifShadowAlpha(notifShadowRest, true, 14)
+	motion(accentBar, "BackgroundTransparency", 0, 14)
+	motion(accentBar, "Size", UDim2.new(0, 3, 1, -24), 18)
+	motion(title, "TextTransparency", 0, 14)
+	if body then
+		task.delay(0.05, function()
+			if body.Parent then
+				motion(body, "TextTransparency", 0, 14)
+			end
+		end)
+	end
+	task.delay(0.12, function()
+		if not notification.Parent then
+			return
+		end
+		motion(notification, "Position", UDim2.fromOffset(0, 0), 13)
+		motion(notifScale, "Scale", 1, 12)
+	end)
+
+	task.delay(duration, function()
+		if not notification.Parent then
+			return
+		end
+		-- Exit: shrink, slide right, fade.
+		motion(accentBar, "BackgroundTransparency", 1, 22)
+		motion(accentBar, "Size", UDim2.new(0, 3, 0, 0), 20)
+		motion(title, "TextTransparency", 1, 22)
+		if body then
+			motion(body, "TextTransparency", 1, 22)
+		end
+		setNotifShadowAlpha(1, true, 22)
+		motion(notification, "BackgroundTransparency", 1, 22)
+		motion(notification, "Position", UDim2.fromOffset(96, 0), 18)
+		motion(notifScale, "Scale", 0.9, 18)
+		task.wait(0.32)
+		if notification.Parent then
+			notification:Destroy()
+		end
+	end)
+
+	return notification
+end
+
+-- Nexonix-style alias: Notification(name, duration)
+function Vertex:Notification(name, duration, _color)
+	if type(name) == "table" then
+		return self:Notify(name)
+	end
+	return self:Notify({ Title = name, Duration = duration })
+end
+
+--=====================================================================
+-- Public: keybind list
+--=====================================================================
+
+local function getKeybindListGui()
+	if Vertex._keybindListGui and Vertex._keybindListGui.Parent then
+		return Vertex._keybindListGui
+	end
+	local gui = create("ScreenGui", {
+		Name = "VertexKeybindListGui",
+		ResetOnSpawn = false,
+		IgnoreGuiInset = true,
+		ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+		DisplayOrder = 85,
+	}, getGuiParent())
+	if syn and type(syn.protect_gui) == "function" then
+		pcall(syn.protect_gui, gui)
+	end
+	Vertex._keybindListGui = gui
+	return gui
+end
+
+function Vertex:KeybindList(params)
+	params = params or {}
+	if type(params) == "string" then
+		params = { Name = params }
+	end
+
+	local titleText = tostring(params.Name or params.Title or "Keybinds")
+	local host = getKeybindListGui()
+
+	local listWidth = tonumber(params.Width) or 210
+
+	local frame = create("Frame", {
+		Name = "VertexKeybindList",
+		BackgroundColor3 = self.Theme.Surface,
+		BackgroundTransparency = 0.06,
+		BorderSizePixel = 0,
+		-- Fixed width + auto height. Scale-1 children + AutomaticSize.X blows out to the viewport.
+		Size = UDim2.fromOffset(listWidth, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		AnchorPoint = params.AnchorPoint or Vector2.new(0, 0.5),
+		Position = params.Position or UDim2.new(0, 18, 0.5, 0),
+		Active = true,
+		Visible = false,
+		ZIndex = 80,
+	}, host)
+	addCorner(frame, RADIUS.Control)
+	addDropShadow(frame, { Blur = 36, YOffset = 8, Spread = 10, Transparency = 0.28 })
+	addPadding(frame, 12, 14, 12, 14)
+	makeDraggable(frame, frame)
+
+	create("UIListLayout", {
+		FillDirection = Enum.FillDirection.Vertical,
+		Padding = UDim.new(0, 8),
+		SortOrder = Enum.SortOrder.LayoutOrder,
+	}, frame)
+
+	local title = create(
+		"TextLabel",
+		merge(textProps(TEXT.Label, self.Theme.Text, self.Fonts.SemiBold), {
+			Name = "Title",
+			Text = titleText,
+			Size = UDim2.new(1, 0, 0, 18),
+			TextXAlignment = Enum.TextXAlignment.Left,
+			LayoutOrder = 1,
+			ZIndex = 81,
+		}),
+		frame
+	)
+
+	local divider = create("Frame", {
+		Name = "Divider",
+		BackgroundColor3 = STROKE_COLOR,
+		BackgroundTransparency = STROKE_SOFT,
+		BorderSizePixel = 0,
+		Size = UDim2.new(1, 0, 0, 1),
+		LayoutOrder = 2,
+		ZIndex = 81,
+	}, frame)
+
+	local content = create("Frame", {
+		Name = "Content",
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		Size = UDim2.new(1, 0, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		LayoutOrder = 3,
+		ZIndex = 81,
+	}, frame)
+	create("UIListLayout", {
+		FillDirection = Enum.FillDirection.Vertical,
+		Padding = UDim.new(0, 8),
+		SortOrder = Enum.SortOrder.LayoutOrder,
+	}, content)
+
+	local list = {
+		Instance = frame,
+		Title = title,
+		Content = content,
+		Binds = {},
+		Disabled = false,
+		_userHidden = false,
+		_toggleableVisible = 0,
+		_shown = false,
+		_visGen = 0,
+		_restAlpha = nil,
+		Window = params.Window,
+	}
+
+	local uiScale = create("UIScale", { Scale = 1 }, frame)
+
+	local function shouldShow()
+		return not list.Disabled and not list._userHidden and list._toggleableVisible > 0
+	end
+
+	local function setVisibleAnimated(want)
+		want = want == true
+		local alreadyMatching = (want and list._shown and frame.Visible) or (not want and not list._shown and not frame.Visible)
+		if alreadyMatching then
+			return
+		end
+
+		list._visGen += 1
+		local gen = list._visGen
+
+		if want then
+			list._shown = true
+			frame.Visible = true
+			-- Recapture so newly added rows fade with the panel.
+			list._restAlpha = snapshotAlpha(frame)
+			setAlpha(list._restAlpha, false)
+			setNow(uiScale, "Scale", 0.96)
+			fadeAlpha(list._restAlpha, true, 14)
+			motion(uiScale, "Scale", 1, 14)
+			task.delay(0.32, function()
+				if gen ~= list._visGen or not frame.Parent then
+					return
+				end
+				list._restAlpha = snapshotAlpha(frame)
+			end)
+		else
+			list._shown = false
+			if not frame.Visible then
+				return
+			end
+			list._restAlpha = snapshotAlpha(frame)
+			fadeOutTree(frame, 18)
+			motion(uiScale, "Scale", 0.96, 18)
+			task.delay(0.28, function()
+				if gen ~= list._visGen or not frame.Parent then
+					return
+				end
+				if shouldShow() then
+					return
+				end
+				frame.Visible = false
+				setNow(uiScale, "Scale", 1)
+				if list._restAlpha then
+					setAlpha(list._restAlpha, true)
+				end
+			end)
+		end
+	end
+
+	local function refreshVisibility()
+		setVisibleAnimated(shouldShow())
+	end
+
+	function list:RefreshVisibility()
+		refreshVisibility()
+	end
+
+	function list:SetText(text)
+		title.Text = tostring(text)
+	end
+
+	function list:SetVisibility(visible)
+		self._userHidden = not (visible == true)
+		refreshVisibility()
+	end
+
+	function list:SetEnabled(enabled)
+		self.Disabled = not (enabled == true)
+		refreshVisibility()
+	end
+
+	-- Instantly force a fade-out (used by window Close / Unload).
+	function list:FadeOut(speed)
+		self._visGen += 1
+		local gen = self._visGen
+		self._shown = false
+		if not frame.Visible then
+			return
+		end
+		fadeOutTree(frame, speed or 18)
+		motion(uiScale, "Scale", 0.96, speed or 18)
+		task.delay(0.28, function()
+			if gen ~= self._visGen or not frame.Parent then
+				return
+			end
+			frame.Visible = false
+		end)
+	end
+
+	function list:RemoveBind(flag)
+		local bindFlag = tostring(flag or "")
+		local existing = self.Binds[bindFlag]
+		if not existing then
+			return false
+		end
+		existing:Destroy()
+		return true
+	end
+
+	function list:Register(data)
+		data = data or {}
+		local bindFlag = tostring(data.Flag or data.Name or HttpService:GenerateGUID(false))
+		local bindName = tostring(data.Name or bindFlag)
+		local toggleable = data.Toggleable == true
+		local keyName = tostring(data.Key or "Unknown")
+		local active = data.Active == true
+		local bindVisible = data.Visible ~= false
+
+		if self.Binds[bindFlag] then
+			self:RemoveBind(bindFlag)
+		end
+
+		local row = create("Frame", {
+			Name = bindFlag,
+			BackgroundTransparency = 1,
+			BorderSizePixel = 0,
+			Size = UDim2.new(1, 0, 0, bindVisible and 18 or 0),
+			Visible = bindVisible,
+			ZIndex = 82,
+		}, content)
+
+		local nameLabel = create(
+			"TextLabel",
+			merge(textProps(TEXT.Small, Vertex.Theme.TextMuted, Vertex.Fonts.Medium), {
+				Name = "Name",
+				Text = bindName,
+				AnchorPoint = Vector2.new(0, 0.5),
+				Position = UDim2.new(0, 0, 0.5, 0),
+				Size = UDim2.new(1, -56, 0, 18),
+				TextXAlignment = Enum.TextXAlignment.Left,
+				TextTruncate = Enum.TextTruncate.AtEnd,
+				ZIndex = 83,
+			}),
+			row
+		)
+
+		local statusLabel = create(
+			"TextLabel",
+			merge(textProps(TEXT.Small, Vertex.Theme.TextDim, Vertex.Fonts.SemiBold), {
+				Name = "Status",
+				Text = toggleable and (active and "On" or "Off") or keyName,
+				AnchorPoint = Vector2.new(1, 0.5),
+				Position = UDim2.new(1, 0, 0.5, 0),
+				AutomaticSize = Enum.AutomaticSize.XY,
+				TextXAlignment = Enum.TextXAlignment.Right,
+				ZIndex = 83,
+			}),
+			row
+		)
+
+		local entry = {
+			Flag = bindFlag,
+			Toggleable = toggleable,
+			Instance = row,
+			NameLabel = nameLabel,
+			StatusLabel = statusLabel,
+			_visible = bindVisible,
+			_active = active,
+			_key = keyName,
+			_pulseToken = 0,
+		}
+
+		local function applyToggleableStyle(isOn)
+			if isOn then
+				nameLabel.TextColor3 = Vertex.Theme.Text
+				statusLabel.Text = "On"
+				statusLabel.TextColor3 = Vertex.Theme.AccentText
+			else
+				nameLabel.TextColor3 = Vertex.Theme.TextMuted
+				statusLabel.Text = "Off"
+				statusLabel.TextColor3 = Vertex.Theme.TextDim
+			end
+		end
+
+		local function applyPressIdleStyle()
+			nameLabel.TextColor3 = Vertex.Theme.TextMuted
+			statusLabel.Text = entry._key
+			statusLabel.TextColor3 = Vertex.Theme.TextDim
+		end
+
+		if toggleable then
+			applyToggleableStyle(active)
+		else
+			applyPressIdleStyle()
+		end
+
+		function entry:SetActive(isOn)
+			if not self.Toggleable then
+				return
+			end
+			self._active = isOn == true
+			applyToggleableStyle(self._active)
+		end
+
+		function entry:SetKey(key)
+			self._key = tostring(key or "Unknown")
+			if not self.Toggleable then
+				statusLabel.Text = self._key
+			end
+		end
+
+		function entry:SetMode(_mode)
+			-- Status for toggleable binds is On/Off; mode lives on the control.
+		end
+
+		function entry:Set(name)
+			nameLabel.Text = tostring(name)
+		end
+
+		function entry:Pulse()
+			if self.Toggleable then
+				return
+			end
+			self._pulseToken += 1
+			local token = self._pulseToken
+			setNow(statusLabel, "TextColor3", Vertex.Theme.Text)
+			nameLabel.TextColor3 = Vertex.Theme.Text
+			motion(statusLabel, "TextColor3", Vertex.Theme.TextDim, 3.2)
+			motion(nameLabel, "TextColor3", Vertex.Theme.TextMuted, 3.2)
+			task.delay(1.35, function()
+				if token ~= self._pulseToken or not statusLabel.Parent then
+					return
+				end
+				applyPressIdleStyle()
+			end)
+		end
+
+		function entry:SetVisibility(visible)
+			visible = visible == true
+			local wasVisible = self._visible == true
+			self._visible = visible
+			row.Visible = visible
+			row.Size = UDim2.new(1, 0, 0, visible and 18 or 0)
+
+			if self.Toggleable then
+				if visible and not wasVisible then
+					list._toggleableVisible += 1
+				elseif not visible and wasVisible then
+					list._toggleableVisible = math.max(0, list._toggleableVisible - 1)
+				end
+				refreshVisibility()
+			end
+		end
+
+		function entry:Destroy()
+			if self.Toggleable and self._visible then
+				list._toggleableVisible = math.max(0, list._toggleableVisible - 1)
+			end
+			if list.Binds[bindFlag] == entry then
+				list.Binds[bindFlag] = nil
+			end
+			if row.Parent then
+				row:Destroy()
+			end
+			refreshVisibility()
+		end
+
+		if toggleable and bindVisible then
+			self._toggleableVisible += 1
+		end
+
+		self.Binds[bindFlag] = entry
+		refreshVisibility()
+		watchTheme(function()
+			if not row.Parent then
+				return false
+			end
+			if entry.Toggleable then
+				applyToggleableStyle(entry._active)
+			else
+				applyPressIdleStyle()
+			end
+		end)
+		return entry
+	end
+
+	function list:AddBind(flag, name, mode, toggled)
+		return self:Register({
+			Flag = flag,
+			Name = name or flag,
+			Mode = mode,
+			Toggleable = true,
+			Active = toggled == true,
+		})
+	end
+
+	function list:Add(name)
+		return self:AddBind(name, name)
+	end
+
+	function list:Destroy()
+		self._visGen += 1
+		local gen = self._visGen
+		self.Disabled = true
+		self._shown = false
+
+		local function cleanup()
+			for flag, entry in pairs(self.Binds) do
+				if entry and entry.Instance and entry.Instance.Parent then
+					pcall(function()
+						entry.Instance:Destroy()
+					end)
+				end
+				self.Binds[flag] = nil
+			end
+			if frame.Parent then
+				frame:Destroy()
+			end
+			for index, item in ipairs(Vertex.KeybindLists) do
+				if item == self then
+					table.remove(Vertex.KeybindLists, index)
+					break
+				end
+			end
+			if Vertex.KeyList == self then
+				Vertex.KeyList = Vertex.KeybindLists[#Vertex.KeybindLists]
+			end
+		end
+
+		if frame.Visible and frame.Parent then
+			fadeOutTree(frame, 18)
+			motion(uiScale, "Scale", 0.96, 18)
+			task.delay(0.28, function()
+				if gen ~= self._visGen then
+					return
+				end
+				cleanup()
+			end)
+		else
+			cleanup()
+		end
+	end
+
+	watchTheme(function()
+		if not frame.Parent then
+			return false
+		end
+		motion(frame, "BackgroundColor3", Vertex.Theme.Surface, 18)
+		title.TextColor3 = Vertex.Theme.Text
+	end)
+
+	table.insert(self.KeybindLists, list)
+	self.KeyList = list
+	refreshVisibility()
+	return list
+end
+
+--=====================================================================
+-- Public: watermark
+--=====================================================================
+
+-- Own ScreenGui so the watermark stays up while the menu is hidden.
+local function getWatermarkGui()
+	if Vertex._watermarkGui and Vertex._watermarkGui.Parent then
+		return Vertex._watermarkGui
+	end
+	local gui = create("ScreenGui", {
+		Name = "VertexWatermarkGui",
+		ResetOnSpawn = false,
+		IgnoreGuiInset = true,
+		ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+		DisplayOrder = 110,
+	}, getGuiParent())
+	if syn and type(syn.protect_gui) == "function" then
+		pcall(syn.protect_gui, gui)
+	end
+	Vertex._watermarkGui = gui
+	return gui
+end
+
+local function makeWatermarkSeparator(parent, order)
+	local wrap = create("Frame", {
+		Name = "Sep",
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		Size = UDim2.fromOffset(14, 18),
+		ZIndex = 71,
+		LayoutOrder = order,
+	}, parent)
+	create("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.fromOffset(1, 14),
+		BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+		BackgroundTransparency = 0.82,
+		BorderSizePixel = 0,
+		ZIndex = 72,
+	}, wrap)
+	return wrap
+end
+
+function Vertex:Watermark(params)
+	params = params or {}
+	if type(params) == "string" then
+		params = { Name = params }
+	end
+
+	local showFps = params.ShowFps ~= false
+	local showPing = params.ShowPing ~= false
+	local titleText = tostring(params.Text or params.Name or params.Title or "Vertex")
+	local iconSource = params.Icon or params.Logo or params.icon or params.logo
+	if (not iconSource or iconSource == "") and self.Windows[#self.Windows] then
+		-- Fall back to the latest window icon if one exists in the tree.
+		local win = self.Windows[#self.Windows]
+		local top = win.ScreenGui and win.ScreenGui:FindFirstChild("Window", true)
+		local bar = top and top:FindFirstChild("TopBar")
+		local icon = bar and bar:FindFirstChild("WindowIcon")
+		if icon and icon:IsA("ImageLabel") then
+			iconSource = icon.Image
+		end
+	end
+
+	local frame = create("Frame", {
+		Name = "VertexWatermark",
+		BackgroundColor3 = self.Theme.Surface,
+		BackgroundTransparency = 0.06,
+		BorderSizePixel = 0,
+		AutomaticSize = Enum.AutomaticSize.XY,
+		AnchorPoint = params.AnchorPoint or Vector2.new(1, 0),
+		Position = params.Position or UDim2.new(1, -18, 0, 18),
+		Active = true,
+		ZIndex = 70,
+	}, getWatermarkGui())
+	addCorner(frame, RADIUS.Control)
+	addDropShadow(frame, { Blur = 36, YOffset = 8, Spread = 10, Transparency = 0.28 })
+	addPadding(frame, 10, 16, 10, 14)
+	create("UIListLayout", {
+		FillDirection = Enum.FillDirection.Horizontal,
+		VerticalAlignment = Enum.VerticalAlignment.Center,
+		Padding = UDim.new(0, 0),
+		SortOrder = Enum.SortOrder.LayoutOrder,
+	}, frame)
+	makeDraggable(frame, frame)
+
+	local layoutOrder = 0
+	if iconSource and iconSource ~= "" then
+		layoutOrder += 1
+		local icon = create("ImageLabel", {
+			Name = "Icon",
+			BackgroundTransparency = 1,
+			Image = tostring(iconSource),
+			Size = UDim2.fromOffset(22, 22),
+			ScaleType = Enum.ScaleType.Fit,
+			ZIndex = 71,
+			LayoutOrder = layoutOrder,
+		}, frame)
+		addCorner(icon, RADIUS.Inner)
+		layoutOrder += 1
+		create("Frame", {
+			BackgroundTransparency = 1,
+			Size = UDim2.fromOffset(10, 1),
+			LayoutOrder = layoutOrder,
+			ZIndex = 71,
+		}, frame)
+	end
+
+	layoutOrder += 1
+	local title = create(
+		"TextLabel",
+		merge(textProps(TEXT.Label, self.Theme.Text, self.Fonts.SemiBold), {
+			Name = "Title",
+			Text = titleText,
+			AutomaticSize = Enum.AutomaticSize.XY,
+			ZIndex = 71,
+			LayoutOrder = layoutOrder,
+		}),
+		frame
+	)
+
+	local fpsLabel, pingLabel
+	if showFps then
+		layoutOrder += 1
+		makeWatermarkSeparator(frame, layoutOrder)
+		layoutOrder += 1
+		fpsLabel = create(
+			"TextLabel",
+			merge(textProps(TEXT.Label, self.Theme.TextMuted, self.Fonts.Medium), {
+				Name = "Fps",
+				Text = "— fps",
+				AutomaticSize = Enum.AutomaticSize.XY,
+				ZIndex = 71,
+				LayoutOrder = layoutOrder,
+			}),
+			frame
+		)
+	end
+	if showPing then
+		layoutOrder += 1
+		makeWatermarkSeparator(frame, layoutOrder)
+		layoutOrder += 1
+		pingLabel = create(
+			"TextLabel",
+			merge(textProps(TEXT.Label, self.Theme.TextMuted, self.Fonts.Medium), {
+				Name = "Ping",
+				Text = "— ms",
+				AutomaticSize = Enum.AutomaticSize.XY,
+				ZIndex = 71,
+				LayoutOrder = layoutOrder,
+			}),
+			frame
+		)
+	end
+
+	local watermark = {
+		Instance = frame,
+		Title = title,
+		FpsLabel = fpsLabel,
+		PingLabel = pingLabel,
+		_fps = 60,
+		_ping = 0,
+	}
+
+	function watermark:SetText(text)
+		-- Keep title only; fps/ping stay on their own labels.
+		local raw = tostring(text or "")
+		local head = string.split(raw, "|")[1]
+		title.Text = (head and head:gsub("^%s+", ""):gsub("%s+$", "")) or raw
+	end
+	function watermark:SetTitle(text)
+		title.Text = tostring(text)
+	end
+	function watermark:SetVisibility(visible)
+		frame.Visible = visible == true
+	end
+	function watermark:Destroy()
+		if self._conn then
+			self._conn:Disconnect()
+			self._conn = nil
+		end
+		for index, item in ipairs(Vertex.Watermarks) do
+			if item == self then
+				table.remove(Vertex.Watermarks, index)
+				break
+			end
+		end
+		if frame.Parent then
+			frame:Destroy()
+		end
+	end
+
+	if showFps or showPing then
+		local frameTimer = tick()
+		local frameCounter = 0
+		local lastPingUpdate = 0
+		watermark._conn = RunService.RenderStepped:Connect(function()
+			if not frame.Parent then
+				if watermark._conn then
+					watermark._conn:Disconnect()
+					watermark._conn = nil
+				end
+				return
+			end
+
+			frameCounter += 1
+			local now = tick()
+
+			if showFps and now - frameTimer >= 1 then
+				watermark._fps = frameCounter
+				frameTimer = now
+				frameCounter = 0
+				if fpsLabel and fpsLabel.Parent then
+					fpsLabel.Text = string.format("%d fps", watermark._fps)
+				end
+			end
+
+			if showPing and now - lastPingUpdate >= 1 then
+				lastPingUpdate = now
+				pcall(function()
+					local pingItem = StatsService.Network.ServerStatsItem:FindFirstChild("Data Ping")
+					if pingItem then
+						watermark._ping = math.floor(pingItem:GetValue())
+					end
+				end)
+				if pingLabel and pingLabel.Parent then
+					pingLabel.Text = string.format("%d ms", watermark._ping)
+				end
+			end
+		end)
+	end
+
+	table.insert(self.Watermarks, watermark)
+	return watermark
+end
+
+--=====================================================================
+-- Public: config (Nexonix-compatible: nexonix/Configs/<name>.json)
+--=====================================================================
+
+function Vertex:GetConfigPath(configName)
+	local name = tostring(configName or "")
+	if name == "" then
+		return nil
+	end
+	local path = (self.Directory or "nexonix") .. (self.Folders and self.Folders.Configs or "/Configs") .. "/" .. name
+	if path:sub(-5) ~= ".json" then
+		path = path .. ".json"
+	end
+	return path
+end
+
+function Vertex:GetConfig()
+	local payload = {}
+	for flag, value in pairs(self._flagData) do
+		if typeof(value) == "EnumItem" then
+			payload[flag] = { Key = value.Name, Mode = "Toggle" }
+		elseif type(value) == "table" and typeof(value.Color) == "Color3" then
+			local hex = value.HexValue
+			if type(hex) == "string" and hex ~= "" then
+				if hex:sub(1, 1) ~= "#" then
+					hex = "#" .. hex
+				end
+			else
+				hex = colorToHex(value.Color)
+			end
+			payload[flag] = { Color = hex, Alpha = value.Alpha or 1 }
+		elseif type(value) == "table" and value.Key ~= nil then
+			payload[flag] = { Key = tostring(value.Key), Mode = value.Mode or "Toggle" }
+		else
+			payload[flag] = value
+		end
+	end
+	return HttpService:JSONEncode(payload)
+end
+
+function Vertex:LoadConfig(jsonString)
+	local ok, data = pcall(function()
+		return HttpService:JSONDecode(jsonString)
+	end)
+	if not ok or type(data) ~= "table" then
+		return false, data
+	end
+
+	self.ConfigState.Loading = true
+	self.ConfigState.PendingConfig = {}
+
+	for flag, value in pairs(data) do
+		local setter = self.SetFlags[flag]
+		if type(value) == "table" and value.Color then
+			local hex = tostring(value.Color)
+			value = {
+				Color = hexToColor(hex),
+				Alpha = value.Alpha or 1,
+				HexValue = hex:gsub("#", ""),
+			}
+		elseif type(value) == "table" and value.Key then
+			value = {
+				Key = tostring(value.Key):gsub("^Enum%.KeyCode%.", ""),
+				Mode = value.Mode or "Toggle",
+			}
+		end
+		if setter then
+			safeCall(setter, value)
+		else
+			self.ConfigState.PendingConfig[flag] = value
+			self.Flags[flag] = value
+		end
+	end
+
+	if type(self.ConfigState.PendingConfig) == "table" and next(self.ConfigState.PendingConfig) == nil then
+		self.ConfigState.PendingConfig = nil
+	end
+
+	self.ConfigState.Loading = false
+	return true, data
+end
+
+function Vertex:SaveConfigFile(configName)
+	local path = self:GetConfigPath(configName or self.ConfigState.Name)
+	if not path then
+		return false, "Missing config name"
+	end
+	if type(writefile) ~= "function" then
+		return false, "writefile unavailable"
+	end
+
+	ensureConfigFolders()
+	local config = self:GetConfig()
+	if not config then
+		return false, "Failed to serialize config"
+	end
+
+	local success, result = pcall(writefile, path, config)
+	if not success then
+		return false, result
+	end
+	return true
+end
+
+function Vertex:LoadConfigFile(configName)
+	local name = tostring(configName or "")
+	if name == "" then
+		return false, "Missing config name"
+	end
+	local path = self:GetConfigPath(name)
+	if not path then
+		return false, "Missing config name"
+	end
+	if type(isfile) ~= "function" or type(readfile) ~= "function" then
+		return false, "filesystem unavailable"
+	end
+
+	local contents
+	local migratedFromFlat = false
+	if isfile(path) then
+		local ok, result = pcall(readfile, path)
+		if not ok then
+			return false, result
+		end
+		contents = result
+	else
+		-- Migrate older flat workspace saves (e.g. tvlGuiByAva.json).
+		local flatName = name
+		if flatName:sub(-5) ~= ".json" then
+			flatName = flatName .. ".json"
+		end
+		if isfile(flatName) then
+			local ok, result = pcall(readfile, flatName)
+			if not ok then
+				return false, result
+			end
+			contents = result
+			migratedFromFlat = true
+		else
+			return false, "Config file not found"
+		end
+	end
+
+	local success, result = self:LoadConfig(contents)
+	if success and migratedFromFlat then
+		pcall(function()
+			self:SaveConfigFile(name)
+		end)
+	end
+	return success, result
+end
+
+function Vertex:LoadConfiguration(configName)
+	local name = tostring(configName or self.ConfigState.Name or "")
+	if configName ~= nil and name ~= "" then
+		self.ConfigState.Name = name
+	end
+	if name == "" then
+		return false, "Missing config name"
+	end
+
+	local success, result = self:LoadConfigFile(name)
+	if self.ConfigState.AutoSave and tostring(self.ConfigState.Name or "") ~= "" then
+		if not success then
+			pcall(function()
+				self:SaveConfigFile(self.ConfigState.Name)
+			end)
+		end
+		self.ConfigState.AutoSaveReady = true
+	end
+	return success, result
+end
+
+function Vertex:SaveConfiguration(configName)
+	return self:SaveConfigFile(configName or self.ConfigState.Name)
+end
+
+function Vertex:QueueConfigSave()
+	local state = self.ConfigState
+	if not state.AutoSave or not state.AutoSaveReady or state.Loading then
+		return
+	end
+	if tostring(state.Name or "") == "" then
+		return
+	end
+
+	state.SaveToken = (state.SaveToken or 0) + 1
+	local token = state.SaveToken
+	task.delay(state.SaveDelay or 0.25, function()
+		if state.Loading or not state.AutoSave or not state.AutoSaveReady then
+			return
+		end
+		if state.SaveToken ~= token then
+			return
+		end
+		self:SaveConfigFile(state.Name)
+	end)
+end
+
+function Vertex:ChangeTheme(themeName, color)
+	if self.Theme[themeName] ~= nil and typeof(color) == "Color3" then
+		self.Theme[themeName] = color
+		if themeName == "Accent" then
+			self.Theme.AccentHover = color:Lerp(Color3.new(1, 1, 1), 0.18)
+			self.Theme.AccentText = color:Lerp(Color3.new(1, 1, 1), 0.35)
+		end
+		applyTheme()
+	end
+end
+
+--=====================================================================
+-- Public: teardown / aliases
+--=====================================================================
+
+-- Track a signal connection so Unload/Destroy can disconnect it.
+function Vertex:Connect(signal, callback)
+	local connection = signal:Connect(callback)
+	table.insert(self.Connections, connection)
+	return connection
+end
+
+function Vertex:DisconnectConnections()
+	for _, connection in ipairs(self.Connections) do
+		pcall(function()
+			if typeof(connection) == "RBXScriptConnection" and connection.Connected then
+				connection:Disconnect()
+			elseif typeof(connection) == "RBXScriptConnection" then
+				connection:Disconnect()
+			end
+		end)
+	end
+	table.clear(self.Connections)
+end
+
+function Vertex:Destroy()
+	clearTooltips()
+	self:DisconnectConnections()
+	for _, window in ipairs(self.Windows) do
+		if window.ReopenGui then
+			pcall(function()
+				window.ReopenGui:Destroy()
+			end)
+		end
+		if window.ScreenGui then
+			window.ScreenGui:Destroy()
+		end
+	end
+	if self._notifyGui then
+		self._notifyGui:Destroy()
+		self._notifyGui = nil
+	end
+	for _, watermark in ipairs(self.Watermarks) do
+		if watermark._conn then
+			watermark._conn:Disconnect()
+			watermark._conn = nil
+		end
+		if watermark.Instance then
+			watermark.Instance:Destroy()
+		end
+	end
+	if self._watermarkGui then
+		self._watermarkGui:Destroy()
+		self._watermarkGui = nil
+	end
+	if self._keybindListGui then
+		self._keybindListGui:Destroy()
+		self._keybindListGui = nil
+	end
+	table.clear(Motion)
+	table.clear(self.Windows)
+	table.clear(self.Watermarks)
+	table.clear(self.KeybindLists)
+	self.KeyList = nil
+	table.clear(self.ActiveTooltips)
+	table.clear(self.ThemeListeners)
+	table.clear(self._flagData)
+	table.clear(self.SetFlags)
+end
+
+function Vertex:Unload()
+	if
+		self.ConfigState
+		and self.ConfigState.AutoSave
+		and self.ConfigState.AutoSaveReady
+		and tostring(self.ConfigState.Name or "") ~= ""
+	then
+		pcall(function()
+			self:SaveConfigFile(self.ConfigState.Name)
+		end)
+	end
+	self.ConfigState.AutoSaveReady = false
+
+	-- Fade keybind lists out with unload.
+	local fading = false
+	for _, keyList in ipairs(self.KeybindLists) do
+		if keyList and keyList.Instance and keyList.Instance.Visible then
+			fading = true
+			if keyList.FadeOut then
+				keyList:FadeOut(16)
+			else
+				fadeOutTree(keyList.Instance, 16)
+			end
+		end
+	end
+	if fading then
+		task.wait(0.28)
+	end
+
+	self:Destroy()
+end
+
+function Vertex:Exit()
+	self:Unload()
+end
+
+-- Nexonix-style top-level aliases (old Vertex names still work).
+function Vertex:Window(params)
+	return self:CreateWindow(params)
+end
+
+return Vertex
