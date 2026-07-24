@@ -1083,6 +1083,8 @@ local function attachKeybindModeSettings(parent, keyControl, rightOffset)
 	local popShadowRest = 0.16
 	addPadding(popover, 6, 6, 6, 6)
 	local popScale = create("UIScale", { Scale = 0.92 }, popover)
+	ensureUiScaleWatcher()
+	local popScaleBinding = registerScaleBinding(popScale, 0.92)
 	create("UIListLayout", {
 		Padding = UDim.new(0, 0),
 		SortOrder = Enum.SortOrder.LayoutOrder,
@@ -1141,7 +1143,7 @@ local function attachKeybindModeSettings(parent, keyControl, rightOffset)
 			popover.Visible = true
 			placePopover()
 			task.defer(placePopover)
-			setNow(popScale, "Scale", 0.92)
+			setBindingAnim(popScaleBinding, 0.92, false)
 			setNow(popover, "BackgroundTransparency", 1)
 			setPopShadowAlpha(1, false)
 			for _, button in pairs(modeButtons) do
@@ -1151,7 +1153,7 @@ local function attachKeybindModeSettings(parent, keyControl, rightOffset)
 			if divider then
 				setNow(divider, "BackgroundTransparency", 1)
 			end
-			motion(popScale, "Scale", 1, 16)
+			setBindingAnim(popScaleBinding, 1, true, 16)
 			motion(popover, "BackgroundTransparency", 0, 16)
 			setPopShadowAlpha(popShadowRest, true, 16)
 			for _, button in pairs(modeButtons) do
@@ -1161,7 +1163,7 @@ local function attachKeybindModeSettings(parent, keyControl, rightOffset)
 				motion(divider, "BackgroundTransparency", 0.85, 16)
 			end
 		else
-			motion(popScale, "Scale", 0.92, 20)
+			setBindingAnim(popScaleBinding, 0.92, true, 20)
 			motion(popover, "BackgroundTransparency", 1, 20)
 			setPopShadowAlpha(1, true, 20)
 			for _, button in pairs(modeButtons) do
@@ -2173,6 +2175,8 @@ function Vertex:CreateWindow(options)
 		})
 		local cardShadowRest = 0.14
 		local cardScale = create("UIScale", { Scale = 0.94 }, card)
+		ensureUiScaleWatcher()
+		local cardScaleBinding = registerScaleBinding(cardScale, 0.94)
 		addPadding(card, 18, 18, 18, 18)
 
 		local function setCardShadowAlpha(alpha, animate, speed)
@@ -2264,7 +2268,7 @@ function Vertex:CreateWindow(options)
 			motion(overlay, "BackgroundTransparency", 1, 20)
 			motion(card, "BackgroundTransparency", 1, 20)
 			setCardShadowAlpha(1, true, 20)
-			motion(cardScale, "Scale", 0.94, 20)
+			setBindingAnim(cardScaleBinding, 0.94, true, 20)
 			motion(title, "TextTransparency", 1, 20)
 			motion(body, "TextTransparency", 1, 20)
 			motion(cancelBtn, "BackgroundTransparency", 1, 20)
@@ -2309,7 +2313,7 @@ function Vertex:CreateWindow(options)
 		motion(overlay, "BackgroundTransparency", 0.45, 16)
 		motion(card, "BackgroundTransparency", 0, 16)
 		setCardShadowAlpha(cardShadowRest, true, 16)
-		motion(cardScale, "Scale", 1, 16)
+		setBindingAnim(cardScaleBinding, 1, true, 16)
 		motion(title, "TextTransparency", 0, 16)
 		motion(body, "TextTransparency", 0, 16)
 		motion(cancelBtn, "BackgroundTransparency", 0, 16)
@@ -2578,6 +2582,8 @@ function Vertex:CreateWindow(options)
 				local pickerShadowRest = 0.16
 				addPadding(picker, 10, 10, 10, 10)
 				local pickerScale = create("UIScale", { Scale = 0.94 }, picker)
+				ensureUiScaleWatcher()
+				local pickerScaleBinding = registerScaleBinding(pickerScale, 0.94)
 				create("UIListLayout", {
 					Padding = UDim.new(0, 10),
 					SortOrder = Enum.SortOrder.LayoutOrder,
@@ -2744,7 +2750,7 @@ function Vertex:CreateWindow(options)
 						task.defer(placePicker)
 						updateCursors(false)
 						picker.Visible = true
-						setNow(pickerScale, "Scale", 0.94)
+						setBindingAnim(pickerScaleBinding, 0.94, false)
 						setNow(picker, "BackgroundTransparency", 1)
 						setPickerShadowAlpha(1, false)
 						setNow(satVal, "BackgroundTransparency", 1)
@@ -2754,7 +2760,7 @@ function Vertex:CreateWindow(options)
 						setNow(svCursorStroke, "Transparency", 1)
 						setNow(hueCursor, "BackgroundTransparency", 1)
 						setNow(hueCursorStroke, "Transparency", 1)
-						motion(pickerScale, "Scale", 1, 16)
+						setBindingAnim(pickerScaleBinding, 1, true, 16)
 						motion(picker, "BackgroundTransparency", 0, 16)
 						setPickerShadowAlpha(pickerShadowRest, true, 16)
 						motion(satVal, "BackgroundTransparency", 0, 16)
@@ -2765,7 +2771,7 @@ function Vertex:CreateWindow(options)
 						motion(hueCursor, "BackgroundTransparency", 0, 16)
 						motion(hueCursorStroke, "Transparency", 0, 16)
 					else
-						motion(pickerScale, "Scale", 0.94, 20)
+						setBindingAnim(pickerScaleBinding, 0.94, true, 20)
 						motion(picker, "BackgroundTransparency", 1, 20)
 						setPickerShadowAlpha(1, true, 20)
 						motion(satVal, "BackgroundTransparency", 1, 20)
